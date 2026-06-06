@@ -787,7 +787,24 @@
     var i = document.getElementById('introScreen');
     if (i) { i.classList.add('intro-done'); setTimeout(function () { if (i.parentNode) i.remove(); }, 600); }
   }, 1900);
-  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => { });
+  function showUpdateBanner() {
+    if (document.getElementById('updateBanner')) return;
+    const b = document.createElement('div'); b.id = 'updateBanner';
+    const span = document.createElement('span'); span.textContent = '🔄 ' + (lang === 'en' ? 'New version available' : 'Шинэ хувилбар гарлаа');
+    const btn = document.createElement('button'); btn.textContent = (lang === 'en' ? 'Refresh' : 'Шинэчлэх');
+    btn.onclick = () => location.reload();
+    b.appendChild(span); b.appendChild(btn); document.body.appendChild(b);
+  }
+  if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+    navigator.serviceWorker.register('sw.js').then(reg => {
+      reg.addEventListener('updatefound', () => {
+        const nw = reg.installing; if (!nw) return;
+        nw.addEventListener('statechange', () => {
+          if (nw.state === 'installed' && navigator.serviceWorker.controller) showUpdateBanner();
+        });
+      });
+    }).catch(() => { });
+  }
   setAuthMode('login');
   (async function boot() {
     const cached = localStorage.getItem('ca_user'); if (cached) { try { user = JSON.parse(cached); } catch (e) { } }
