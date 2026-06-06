@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="mn">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#1565c0" />
+  <title>Барилгын Нягтлан</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- ========== НЭВТРЭХ ДЭЛГЭЦ ========== -->
+  <div id="loginOverlay" class="overlay hidden">
+    <div class="login-card">
+      <div class="login-logo">🏗️</div>
+      <h2>Барилгын Нягтлан</h2>
+      <p class="login-sub">Үүлэн бүртгэл — өгөгдөл хадгалагдаж, утаснуудын хооронд синк болно.</p>
+      <input type="email" id="loginEmail" placeholder="Имэйл хаяг" autocomplete="email" />
+      <input type="password" id="loginPass" placeholder="Нууц үг (6+ тэмдэгт)" autocomplete="current-password" />
+      <div id="loginErr" class="login-err"></div>
+      <button id="signInBtn" class="primary">Нэвтрэх</button>
+      <button id="signUpBtn" class="ghost">Шинээр бүртгүүлэх</button>
+      <button id="skipLoginBtn" class="link-btn">Нэвтрэхгүйгээр туршиж үзэх (офлайн)</button>
+    </div>
+  </div>
+
+  <!-- ========== БАЙГУУЛЛАГА ТОХИРУУЛАХ (анхны нэвтрэлт) ========== -->
+  <div id="setupOverlay" class="overlay hidden">
+    <div class="login-card">
+      <div class="login-logo">🏢</div>
+      <h2>Тавтай морил!</h2>
+      <p class="login-sub">Байгууллагынхаа нэрийг оруулна уу. Энэ нэр таны Excel тайлангийн толгойд харагдана.</p>
+      <input type="text" id="setupName" placeholder="Байгууллагын нэр *" autocomplete="organization" />
+      <input type="text" id="setupReg" placeholder="Регистрийн дугаар (заавал биш)" />
+      <input type="text" id="setupPhone" placeholder="Утас (заавал биш)" inputmode="tel" />
+      <div id="setupErr" class="login-err"></div>
+      <button id="setupSaveBtn" class="primary">Хадгалаад эхлэх</button>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <div class="brand">🏗️ Барилгын Нягтлан</div>
+    <div class="topbar-right">
+      <button id="acctBtn" class="acct-btn" title="Бүртгэл">👤</button>
+      <button id="monthBtn" class="month-pill" title="Сар сонгох">2026-06</button>
+    </div>
+  </header>
+
+  <main>
+    <!-- ========== БИЧИХ ТАБ ========== -->
+    <section id="tab-add" class="tab active">
+      <div class="type-toggle">
+        <button class="type-btn active" data-type="material">📦 Материал</button>
+        <button class="type-btn" data-type="income">💰 Орлого</button>
+      </div>
+
+      <div class="mic-wrap">
+        <button id="micBtn" class="mic" aria-label="Ярих">🎤</button>
+        <div id="micStatus" class="mic-status">Товчийг дараад ярина уу</div>
+        <div id="interim" class="interim"></div>
+      </div>
+
+      <!-- Материалын форм -->
+      <form id="materialForm" class="entry-form">
+        <label>Материалын нэр
+          <input type="text" name="name" placeholder="ж: цемент" autocomplete="off" />
+        </label>
+        <!-- Зургийн хайлт -->
+        <div id="matImageBox" class="img-box hidden">
+          <div id="matImageStatus" class="img-status"></div>
+          <div id="matImages" class="img-thumbs"></div>
+        </div>
+        <div class="row3">
+          <label>Тоо хэмжээ
+            <input type="number" name="qty" inputmode="decimal" step="any" placeholder="0" />
+          </label>
+          <label>Нэгж
+            <select name="unit">
+              <option value="ш">ш</option>
+              <option value="кг">кг</option>
+              <option value="тн">тн</option>
+              <option value="м">м</option>
+              <option value="м²">м²</option>
+              <option value="м³">м³</option>
+              <option value="уут">уут</option>
+              <option value="литр">литр</option>
+            </select>
+          </label>
+          <label>Нэгж үнэ
+            <input type="number" name="price" inputmode="decimal" step="any" placeholder="0" />
+          </label>
+        </div>
+        <label>Нийт үнэ (₮)
+          <input type="number" name="total" inputmode="decimal" step="any" placeholder="0" class="big-amount" />
+        </label>
+        <label>Нийлүүлэгч
+          <input type="text" name="supplier" placeholder="ж: Налайх ХХК" autocomplete="off" />
+        </label>
+      </form>
+
+      <!-- Орлогын форм -->
+      <form id="incomeForm" class="entry-form hidden">
+        <label>Дүн (₮)
+          <input type="number" name="amount" inputmode="decimal" step="any" placeholder="0" class="big-amount" />
+        </label>
+        <label>Эх үүсвэр / Төлсөн этгээд
+          <input type="text" name="source" placeholder="ж: Захиалагч төлбөр" autocomplete="off" />
+        </label>
+      </form>
+
+      <!-- Нийтлэг талбарууд -->
+      <div class="entry-form">
+        <label>Огноо
+          <input type="date" id="entryDate" />
+        </label>
+        <label>Тэмдэглэл
+          <textarea id="entryNote" rows="2" placeholder="Нэмэлт тайлбар..."></textarea>
+        </label>
+      </div>
+
+      <button id="saveBtn" class="primary">💾 Хадгалах</button>
+    </section>
+
+    <!-- ========== ЖАГСААЛТ ТАБ ========== -->
+    <section id="tab-list" class="tab">
+      <div class="summary">
+        <div class="sum-card income">
+          <div class="sum-label">Нийт орлого</div>
+          <div class="sum-val" id="sumIncome">0 ₮</div>
+        </div>
+        <div class="sum-card expense">
+          <div class="sum-label">Материалын зардал</div>
+          <div class="sum-val" id="sumMaterial">0 ₮</div>
+        </div>
+      </div>
+      <div id="entryList" class="entry-list"></div>
+    </section>
+
+    <!-- ========== САНУУЛГА ТАБ ========== -->
+    <section id="tab-remind" class="tab">
+      <form id="reminderForm" class="entry-form">
+        <label>Юу сануулах вэ?
+          <input type="text" name="text" placeholder="ж: Цемент захиалах" autocomplete="off" />
+        </label>
+        <label>Хэзээ?
+          <input type="datetime-local" name="when" />
+        </label>
+        <button class="primary" type="submit">➕ Сануулга нэмэх</button>
+        <button id="micRemindBtn" class="ghost" type="button">🎤 Ярьж нэмэх</button>
+      </form>
+      <div id="notifHint" class="hint"></div>
+      <div id="reminderList" class="entry-list"></div>
+    </section>
+
+    <!-- ========== ТАЙЛАН ТАБ ========== -->
+    <section id="tab-report" class="tab">
+      <div class="report-box">
+        <h3>🏢 Байгууллагын мэдээлэл</h3>
+        <div class="entry-form">
+          <label>Байгууллагын нэр
+            <input type="text" id="coName" placeholder="ж: Барилга Трейд ХХК" autocomplete="organization" />
+          </label>
+          <label>Регистрийн дугаар
+            <input type="text" id="coReg" placeholder="заавал биш" />
+          </label>
+          <label>Утас
+            <input type="text" id="coPhone" placeholder="заавал биш" inputmode="tel" />
+          </label>
+          <button id="coSaveBtn" class="ghost">💾 Хадгалах</button>
+        </div>
+      </div>
+      <div class="report-box">
+        <p>Сонгосон сарын бүх материал, орлогыг нэг Excel файл болгож татна. Excel дээр байгууллагын нэр автоматаар орно.</p>
+        <div class="report-stats" id="reportStats"></div>
+        <button id="excelBtn" class="primary big">📊 Сарын Excel татах</button>
+        <button id="clearMonthBtn" class="danger">🗑️ Энэ сарын бүртгэл устгах</button>
+      </div>
+      <div class="report-box">
+        <h3>Тусламж</h3>
+        <ul class="help">
+          <li>🎤 товчийг дараад монголоор ярь — текст автоматаар орно.</li>
+          <li>Дүнг үргэлж <b>шалгаад</b> хадгал — алдаа гарвал засаарай.</li>
+          <li>Материалын нэр бичихэд зураг автоматаар хайгдана.</li>
+          <li>👤 товчоор нэвтэрч өгөгдлөө үүлэнд нөөцлөнө.</li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <!-- ========== ДООД ЦЭС ========== -->
+  <nav class="tabbar">
+    <button class="navbtn active" data-tab="add"><span>➕</span>Бичих</button>
+    <button class="navbtn" data-tab="list"><span>📋</span>Жагсаалт</button>
+    <button class="navbtn" data-tab="remind"><span>🔔</span>Сануулга</button>
+    <button class="navbtn" data-tab="report"><span>📊</span>Тайлан</button>
+  </nav>
+
+  <div id="toast" class="toast"></div>
+
+  <!-- SheetJS (Excel) -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <!-- Firebase (Үүлэн бүртгэл) -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <script src="firebase-config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

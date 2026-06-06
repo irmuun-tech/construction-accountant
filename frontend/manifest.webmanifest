@@ -1,0 +1,18 @@
+{
+  "name": "Барилгын Нягтлан · Construction Accountant",
+  "short_name": "Нягтлан",
+  "description": "Материал хайх, сарын тооллого, орлого/зарлага, зээлийн сануулга — үүлэн бүртгэлтэй. Cloud-synced construction accountant.",
+  "lang": "mn",
+  "dir": "ltr",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0f4c81",
+  "theme_color": "#0f4c81",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

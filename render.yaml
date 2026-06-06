@@ -1,0 +1,20 @@
+# One service runs BOTH the API and the website (frontend served by FastAPI).
+# Deploy on Render (https://render.com): push this folder to GitHub →
+# Render "New + → Blueprint" → pick the repo. Only MONGO_URL needs to be set.
+services:
+  - type: web
+    name: construction-accountant
+    runtime: python
+    rootDir: backend
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGO_URL          # ← paste your MongoDB Atlas connection string in the Render dashboard
+        sync: false
+      - key: DB_NAME
+        value: construction_accountant
+      - key: JWT_SECRET         # Render auto-generates a strong random secret
+        generateValue: true
+      - key: CORS_ORIGINS       # same-origin hosting → "*" is fine
+        value: "*"
