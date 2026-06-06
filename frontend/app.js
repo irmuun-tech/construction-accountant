@@ -728,7 +728,7 @@
           <p style="margin:.4rem 0 .2rem"><b>${T('conv_drop')}</b></p>
           <p class="hint">${T('conv_formats')}</p>
           <button class="btn primary mt" id="chooseBtn">📂 ${T('conv_choose')}</button>
-          <input type="file" id="convFile" accept=".csv,.tsv,.txt,.json" hidden>
+          <input type="file" id="convFile" hidden>
         </div>
       </div>
       <div class="card mt">
