@@ -710,6 +710,23 @@ def _rows_from_upload(content: bytes, ext: str):
         return rows
     return _rows_from_file(content, ext)
 
+def _sheets_from_upload(content: bytes, ext: str):
+    """Return a list of row-lists — one per worksheet for Excel, or one for CSV/JSON."""
+    if ext in ('xlsx', 'xlsm'):
+        wb = load_workbook(BytesIO(content), data_only=True, read_only=True)
+        sheets = []
+        for ws in wb.worksheets:
+            rows = []
+            for r in ws.iter_rows(values_only=True):
+                if r is None or all(c is None or str(c).strip() == '' for c in r):
+                    continue
+                rows.append(list(r))
+            if rows:
+                sheets.append(rows)
+        wb.close()
+        return sheets if sheets else [[]]
+    return [_rows_from_file(content, ext)]
+
 def _map_headers(header_row):
     idx = {}
     for i, h in enumerate(header_row):
@@ -777,18 +794,33 @@ def _guess_numeric_col(rows, exclude=None):
             best_count, best = cnt, ci
     return best if best_count >= 1 else None
 
+def _find_header_row(rows):
+    """Find the real header row, skipping title rows like 'Сангийн материал'."""
+    allkeys = [k for keys in HEADER_KEYS.values() for k in keys]
+    best_i, best_score = 0, 0
+    for i, r in enumerate(rows[:12]):
+        joined = ' '.join(str(c if c is not None else '').lower() for c in r)
+        nonempty = sum(1 for c in r if str(c if c is not None else '').strip())
+        score = sum(1 for k in allkeys if k in joined)
+        if nonempty >= 2 and score > best_score:
+            best_score, best_i = score, i
+    return best_i if best_score >= 2 else 0
+
 def _parse_import(rows, kind, default_date):
     if not rows or len(rows) < 2:
         raise HTTPException(status_code=400, detail="Толгой мөр + дор хаяж 1 мөр хэрэгтэй / Need a header row + at least 1 data row")
-    idx = _map_headers(rows[0])
+    hi = _find_header_row(rows)
+    header = rows[hi]
+    data_rows = rows[hi + 1:]
+    idx = _map_headers(header)
     records = []
     if kind == 'ledger':
         if 'amount' not in idx:
-            guess = _guess_numeric_col(rows, exclude=idx.get('date'))
+            guess = _guess_numeric_col(rows[hi:], exclude=idx.get('date'))
             if guess is None:
                 raise HTTPException(status_code=400, detail="Мөнгөн дүнгийн багана олдсонгүй (Дүн / Үнэ / Amount) / Amount column not found")
             idx['amount'] = guess
-        for r in rows[1:]:
+        for r in data_rows:
             amt = _to_num(_cell(r, idx, 'amount'))
             if amt == 0:
                 continue
@@ -801,17 +833,20 @@ def _parse_import(rows, kind, default_date):
     elif kind == 'materials':
         if 'name' not in idx:
             idx['name'] = 0  # assume the first column holds the material name
-        for r in rows[1:]:
+        for r in data_rows:
             name = str(_cell(r, idx, 'name') or '').strip()
             if not name:
                 continue
+            price = _to_num(_cell(r, idx, 'price'))
             q = _cell(r, idx, 'quantity')
+            qty = _to_num(q) if (q is not None and str(q).strip() != '') else None
+            if price == 0 and qty is None:
+                continue  # skip section/category label rows (e.g. "Цэвэр ус")
             records.append({
                 'name': name, 'category': str(_cell(r, idx, 'category') or '').strip(),
                 'unit': (str(_cell(r, idx, 'unit') or '').strip() or 'ш'),
-                'price': _to_num(_cell(r, idx, 'price')),
-                'supplier': str(_cell(r, idx, 'supplier') or '').strip(),
-                'quantity': (_to_num(q) if q is not None and str(q).strip() != '' else None),
+                'price': price, 'supplier': str(_cell(r, idx, 'supplier') or '').strip(),
+                'quantity': qty,
             })
     else:
         raise HTTPException(status_code=400, detail="kind must be 'ledger' or 'materials'")
@@ -833,11 +868,21 @@ async def import_data(
         raise HTTPException(status_code=413, detail="Файл хэт том / File too large")
     fname = file.filename or "file"
     ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
-    rows = _rows_from_upload(content, ext)
     default_date = (month + "-15") if re.match(r'^\d{4}-\d{2}$', month or '') else datetime.now().strftime("%Y-%m-%d")
-    records, columns = _parse_import(rows, kind, default_date)
+    sheets = _sheets_from_upload(content, ext)
+    records, columns, errors = [], [], []
+    for srows in sheets:
+        if not srows or len(srows) < 2:
+            continue
+        try:
+            recs, cols = _parse_import(srows, kind, default_date)
+            records.extend(recs)
+            if cols:
+                columns = cols
+        except HTTPException as e:
+            errors.append(e.detail)
     if not records:
-        raise HTTPException(status_code=400, detail="Импортлох мөр олдсонгүй / No rows to import")
+        raise HTTPException(status_code=400, detail=(errors[0] if errors else "Импортлох мөр олдсонгүй / No rows to import"))
 
     if str(confirm).lower() != "true":
         return {"preview": records[:12], "total": len(records), "columns": columns, "kind": kind}
