@@ -767,7 +767,7 @@
         <div id="convStatus" class="mt"></div>
       </div>`;
     let kind = 'ledger';
-    const setKind = k => { kind = k; $('#kLedger').classList.toggle('active', k === 'ledger'); $('#kMaterials').classList.toggle('active', k === 'materials'); };
+    const setKind = k => { kind = k; $('#kLedger').classList.toggle('active', k === 'ledger'); $('#kMaterials').classList.toggle('active', k === 'materials'); const ir = $('#impResult'); if (ir) ir.innerHTML = ''; };
     $('#kLedger').onclick = () => setKind('ledger');
     $('#kMaterials').onclick = () => setKind('materials');
     $('#tmplBtn').onclick = () => downloadTemplate(kind);

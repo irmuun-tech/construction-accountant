@@ -1,6 +1,6 @@
 /* Service worker — caches the static app shell for fast loads / installability.
    API requests always go to the network (this is a cloud-synced app). */
-const CACHE = 'ca-cloud-v12';
+const CACHE = 'ca-cloud-v13';
 const ASSETS = [
   './', './index.html', './styles.css', './auth.css', './config.js', './app.js',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png'

@@ -687,7 +687,7 @@ async def convert_to_excel(file: UploadFile = File(...), authorization: Optional
 HEADER_KEYS = {
     'date': ['date', 'огноо'],
     'type': ['type', 'төрөл'],
-    'amount': ['amount', 'дүн', 'мөнгө', 'нийт', 'total'],
+    'amount': ['amount', 'дүн', 'үнэ', 'мөнгө', 'төгрөг', 'нийт', 'total', 'sum'],
     'category': ['category', 'ангилал'],
     'description': ['description', 'тайлбар', 'утга', 'гүйлгээ', 'note', 'тэмдэглэл'],
     'name': ['name', 'нэр', 'материал', 'material'],
@@ -757,6 +757,26 @@ def _norm_type(v, amount):
         return 'outcome'
     return 'income' if amount >= 0 else 'outcome'
 
+def _guess_numeric_col(rows, exclude=None):
+    ncols = max((len(r) for r in rows), default=0)
+    best, best_count = None, 0
+    for ci in range(ncols):
+        if ci == exclude:
+            continue
+        cnt = 0
+        for r in rows[1:60]:
+            if ci < len(r):
+                v = r[ci]
+                if isinstance(v, (int, float)):
+                    cnt += 1
+                else:
+                    s = str(v if v is not None else '').strip()
+                    if s and re.fullmatch(r'[\d.,\-\s₮]+', s):
+                        cnt += 1
+        if cnt > best_count:
+            best_count, best = cnt, ci
+    return best if best_count >= 1 else None
+
 def _parse_import(rows, kind, default_date):
     if not rows or len(rows) < 2:
         raise HTTPException(status_code=400, detail="Толгой мөр + дор хаяж 1 мөр хэрэгтэй / Need a header row + at least 1 data row")
@@ -764,7 +784,10 @@ def _parse_import(rows, kind, default_date):
     records = []
     if kind == 'ledger':
         if 'amount' not in idx:
-            raise HTTPException(status_code=400, detail="'Дүн / Amount' багана олдсонгүй / 'Amount' column not found")
+            guess = _guess_numeric_col(rows, exclude=idx.get('date'))
+            if guess is None:
+                raise HTTPException(status_code=400, detail="Мөнгөн дүнгийн багана олдсонгүй (Дүн / Үнэ / Amount) / Amount column not found")
+            idx['amount'] = guess
         for r in rows[1:]:
             amt = _to_num(_cell(r, idx, 'amount'))
             if amt == 0:
@@ -777,7 +800,7 @@ def _parse_import(rows, kind, default_date):
             })
     elif kind == 'materials':
         if 'name' not in idx:
-            raise HTTPException(status_code=400, detail="'Нэр / Name' багана олдсонгүй / 'Name' column not found")
+            idx['name'] = 0  # assume the first column holds the material name
         for r in rows[1:]:
             name = str(_cell(r, idx, 'name') or '').strip()
             if not name:
