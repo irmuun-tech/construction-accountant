@@ -62,7 +62,7 @@
     lang_mn: ['Монгол', 'Mongolian'], lang_en: ['Англи', 'English'], lang_both: ['Хоёулаа', 'Both'],
     account: ['Бүртгэл', 'Account'], synced: ['Үүлэнд синк хийгдсэн', 'Synced to cloud'],
     login: ['Нэвтрэх', 'Login'], register: ['Бүртгүүлэх', 'Register'], password: ['Нууц үг', 'Password'],
-    nav_convert: ['Хөрвүүлэгч', 'Convert'], conv_title: ['Excel рүү хөрвүүлэх', 'Convert to Excel'],
+    nav_convert: ['Импорт', 'Import'], conv_title: ['Excel рүү хөрвүүлэх', 'Convert to Excel'],
     conv_sub: ['CSV, TSV, JSON, текст файлыг .xlsx болгох', 'Turn CSV, TSV, JSON or text into .xlsx'],
     conv_drop: ['Файлаа энд чирж тавь', 'Drag & drop your file here'],
     conv_choose: ['Файл сонгох', 'Choose file'],
@@ -70,7 +70,14 @@
     conv_paste_ph: ['Excel/Sheets-ээс хууласан хүснэгт эсвэл CSV-г энд буулгана уу...', 'Paste a table copied from Excel/Sheets, or CSV here...'],
     conv_paste_btn: ['Буулгасныг хөрвүүлэх', 'Convert pasted'],
     conv_formats: ['Дэмждэг: CSV, TSV, JSON, TXT (зураг/PDF биш)', 'Supported: CSV, TSV, JSON, TXT (not images/PDF)'],
-    conv_done: ['амжилттай татагдлаа', 'downloaded'], conv_empty: ['Эхлээд өгөгдөл оруулна уу', 'Enter some data first']
+    conv_done: ['амжилттай татагдлаа', 'downloaded'], conv_empty: ['Эхлээд өгөгдөл оруулна уу', 'Enter some data first'],
+    imp_title: ['Файл импортлох', 'Import a file'], imp_sub: ['Excel/CSV-г бичилтэд оруулах', 'Add Excel/CSV into your records'],
+    imp_kind: ['Юу импортлох вэ?', 'What are you importing?'], imp_ledger: ['Орлого/Зарлага', 'Income/Expense'],
+    imp_materials: ['Материал', 'Materials'], imp_template: ['Загвар татах', 'Get template'],
+    imp_choose: ['Файл сонгох', 'Choose file'], imp_preview: ['Урьдчилан харах', 'Preview'],
+    imp_import_n: ['мөр оруулах', 'rows — Import'], imp_done: ['мөр орлоо', 'rows imported'],
+    imp_or_convert: ['Эсвэл зүгээр Excel болгох (хадгалахгүй):', 'Or just convert a file to Excel (no import):'],
+    report_download: ['Сарын Excel татах', 'Download month Excel'], report_month: ['Тайлант сар', 'Report month']
   };
   function T(key) { const e = STR[key]; if (!e) return key; if (lang === 'mn') return e[0]; if (lang === 'en') return e[1]; return e[0] + ' / ' + e[1]; }
 
@@ -305,7 +312,8 @@
     const net = stats.monthly_income - stats.monthly_outcome;
 
     app.innerHTML = `
-      <div class="page-head"><div><h2>${T('dash_title')}</h2><div class="sub">${esc((user && user.company) || '')} · ${thisMonthVal()}</div></div></div>
+      <div class="page-head"><div><h2>${T('dash_title')}</h2><div class="sub">${esc((user && user.company) || '')} · ${thisMonthVal()}</div></div>
+        <div class="head-actions"><input type="month" id="dashMonth" value="${thisMonthVal()}" style="width:auto"><button class="btn accent" id="dlMonth">⬇️ ${T('report_download')}</button></div></div>
       <div class="grid kpis">
         <div class="card kpi green"><div class="label">${T('income')} · ${T('this_month')}</div><div class="value">${fmtMoney(stats.monthly_income)}</div></div>
         <div class="card kpi red"><div class="label">${T('expense')} · ${T('this_month')}</div><div class="value">${fmtMoney(stats.monthly_outcome)}</div></div>
@@ -324,6 +332,16 @@
           ${low.length ? low.map(x => `<div class="alert warn">⚠️ <b>${esc(x.name)}</b> — ${fmtQty(x.qty)} ${esc(unitLabel(x.unit))} (${T('min_stock')}: ${fmtQty(x.min)})</div>`).join('') : `<div class="alert info">✓ ${T('no_alerts')}</div>`}
         </div>
       </div>`;
+    const dl = $('#dlMonth'); if (dl) dl.onclick = () => downloadMonthlyReport($('#dashMonth').value);
+  }
+  function downloadMonthlyReport(ym) {
+    const [y, mo] = (ym || thisMonthVal()).split('-');
+    fetch(API + `/report/monthly?month=${+mo}&year=${+y}`, { headers: { Authorization: 'Bearer ' + token } })
+      .then(res => { if (res.status === 401) { doLogout(); throw new Error('unauthorized'); } if (!res.ok) throw new Error('Error ' + res.status); return res.blob(); })
+      .then(blob => {
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `report_${y}-${mo}.xlsx`;
+        document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); toast('📊 Excel ✓');
+      }).catch(e => { if (e.message !== 'unauthorized') toast(e.message); });
   }
   function loanAlertRow(l) {
     const today = todayISO();
@@ -721,33 +739,97 @@
      ============================================================ */
   async function viewConvert() {
     app.innerHTML = `
-      <div class="page-head"><div><h2>🔄 ${T('conv_title')}</h2><div class="sub">${T('conv_sub')}</div></div></div>
+      <div class="page-head"><div><h2>📥 ${T('imp_title')}</h2><div class="sub">${T('imp_sub')}</div></div></div>
       <div class="card">
+        <div class="field"><label>${T('imp_kind')}</label>
+          <div class="seg">
+            <button type="button" class="seg-btn active" id="kLedger">💰 ${T('imp_ledger')}</button>
+            <button type="button" class="seg-btn" id="kMaterials">📦 ${T('imp_materials')}</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field"><label>${T('month')}</label><input type="month" id="impMonth" value="${thisMonthVal()}"></div>
+          <div class="field"><label>&nbsp;</label><button type="button" class="btn sm" id="tmplBtn">⬇️ ${T('imp_template')}</button></div>
+        </div>
         <div id="dropZone" class="dropzone">
-          <div style="font-size:2.6rem">📄 → 📊</div>
+          <div style="font-size:2.4rem">📄 → 🗂️</div>
           <p style="margin:.4rem 0 .2rem"><b>${T('conv_drop')}</b></p>
-          <p class="hint">${T('conv_formats')}</p>
-          <button class="btn primary mt" id="chooseBtn">📂 ${T('conv_choose')}</button>
-          <input type="file" id="convFile" hidden>
+          <p class="hint">CSV · Excel (.xlsx) · TSV · JSON</p>
+          <button class="btn primary mt" id="chooseBtn">📂 ${T('imp_choose')}</button>
+          <input type="file" id="impFile" hidden>
         </div>
       </div>
+      <div id="impResult" class="mt"></div>
       <div class="card mt">
-        <div class="section-title"><h3>📋 ${T('conv_paste')}</h3></div>
-        <textarea id="convPaste" rows="6" placeholder="${esc(T('conv_paste_ph'))}"></textarea>
-        <div class="modal-actions"><button class="btn primary" id="pasteBtn">${T('conv_paste_btn')}</button></div>
-      </div>
-      <div id="convStatus" class="mt"></div>`;
-    const fileInput = $('#convFile'), dz = $('#dropZone');
+        <div class="hint">${T('imp_or_convert')}</div>
+        <div class="head-actions mt"><button class="btn ghost sm" id="convOnlyBtn">🔄 ${T('conv_title')}</button></div>
+        <input type="file" id="convFile" hidden>
+        <div id="convStatus" class="mt"></div>
+      </div>`;
+    let kind = 'ledger';
+    const setKind = k => { kind = k; $('#kLedger').classList.toggle('active', k === 'ledger'); $('#kMaterials').classList.toggle('active', k === 'materials'); };
+    $('#kLedger').onclick = () => setKind('ledger');
+    $('#kMaterials').onclick = () => setKind('materials');
+    $('#tmplBtn').onclick = () => downloadTemplate(kind);
+    const fileInput = $('#impFile'), dz = $('#dropZone');
     $('#chooseBtn').onclick = () => fileInput.click();
-    fileInput.onchange = () => { if (fileInput.files[0]) doConvert(fileInput.files[0]); };
+    fileInput.onchange = () => { if (fileInput.files[0]) previewImport(fileInput.files[0]); };
     dz.ondragover = e => { e.preventDefault(); dz.classList.add('drag'); };
     dz.ondragleave = () => dz.classList.remove('drag');
-    dz.ondrop = e => { e.preventDefault(); dz.classList.remove('drag'); if (e.dataTransfer.files[0]) doConvert(e.dataTransfer.files[0]); };
-    $('#pasteBtn').onclick = () => {
-      const t = $('#convPaste').value;
-      if (!t.trim()) { toast(T('conv_empty')); return; }
-      doConvert(new File([t], 'pasted.txt', { type: 'text/plain' }));
-    };
+    dz.ondrop = e => { e.preventDefault(); dz.classList.remove('drag'); if (e.dataTransfer.files[0]) previewImport(e.dataTransfer.files[0]); };
+    const cf = $('#convFile');
+    $('#convOnlyBtn').onclick = () => cf.click();
+    cf.onchange = () => { if (cf.files[0]) doConvert(cf.files[0]); };
+  }
+  function importKind() { return $('#kLedger') && $('#kLedger').classList.contains('active') ? 'ledger' : 'materials'; }
+  async function previewImport(file) {
+    const box = $('#impResult'); const kind = importKind(); const month = $('#impMonth') ? $('#impMonth').value : thisMonthVal();
+    box.innerHTML = `<div class="loading"><div class="spinner"></div>${T('loading')}</div>`;
+    try {
+      const fd = new FormData(); fd.append('file', file); fd.append('kind', kind); fd.append('month', month); fd.append('confirm', 'false');
+      const res = await fetch(API + '/import', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: fd });
+      if (res.status === 401) { doLogout(); return; }
+      if (!res.ok) { let d = ''; try { d = (await res.json()).detail; } catch (e) { } throw new Error(d || ('Error ' + res.status)); }
+      renderImportPreview(await res.json(), file, kind, month);
+    } catch (e) { box.innerHTML = `<div class="alert danger">⚠️ ${esc(e.message)}</div>`; }
+  }
+  function renderImportPreview(j, file, kind, month) {
+    const rows = j.preview || [];
+    let head, body;
+    if (kind === 'ledger') {
+      head = `<th>${T('date')}</th><th>${T('type')}</th><th class="num">${T('amount')}</th><th>${T('category')}</th><th>${T('description')}</th>`;
+      body = rows.map(r => `<tr><td class="nowrap">${esc(r.date)}</td><td><span class="pill ${r.type === 'income' ? 'income' : 'expense'}">${r.type === 'income' ? T('income_t') : T('outcome_t')}</span></td><td class="num">${fmtMoney(r.amount)}</td><td>${esc(r.category || '-')}</td><td>${esc(r.description || '-')}</td></tr>`).join('');
+    } else {
+      head = `<th>${T('name')}</th><th>${T('category')}</th><th>${T('unit')}</th><th class="num">${T('unit_price')}</th><th>${T('supplier')}</th><th class="num">${T('qty')}</th>`;
+      body = rows.map(r => `<tr><td><b>${esc(r.name)}</b></td><td>${esc(r.category || '-')}</td><td>${esc(unitLabel(r.unit))}</td><td class="num">${fmtMoney(r.price)}</td><td>${esc(r.supplier || '-')}</td><td class="num">${r.quantity != null ? fmtQty(r.quantity) : '-'}</td></tr>`).join('');
+    }
+    $('#impResult').innerHTML = `<div class="card"><div class="section-title"><h3>${T('imp_preview')} · ${rows.length}/${j.total}</h3>
+      <button class="btn primary" id="doImportBtn">✅ ${j.total} ${T('imp_import_n')}</button></div>
+      <div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;
+    $('#doImportBtn').onclick = () => confirmImport(file, kind, month);
+  }
+  async function confirmImport(file, kind, month) {
+    const btn = $('#doImportBtn'); if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+      const fd = new FormData(); fd.append('file', file); fd.append('kind', kind); fd.append('month', month); fd.append('confirm', 'true');
+      const res = await fetch(API + '/import', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: fd });
+      if (res.status === 401) { doLogout(); return; }
+      if (!res.ok) { let d = ''; try { d = (await res.json()).detail; } catch (e) { } throw new Error(d || ('Error ' + res.status)); }
+      const j = await res.json();
+      let msg = '✅ ' + j.imported + ' ' + T('imp_done');
+      if (j.stock_added) msg += ` · ${j.stock_added} ${T('nav_stocktake')}`;
+      $('#impResult').innerHTML = `<div class="alert info">${msg}</div>`;
+      toast(msg);
+    } catch (e) { $('#impResult').innerHTML = `<div class="alert danger">⚠️ ${esc(e.message)}</div>`; }
+  }
+  async function downloadTemplate(kind) {
+    try {
+      const res = await fetch(API + '/import/template?kind=' + kind, { headers: { Authorization: 'Bearer ' + token } });
+      if (res.status === 401) { doLogout(); return; }
+      const blob = await res.blob(); const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = 'template_' + kind + '.xlsx';
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    } catch (e) { toast(e.message); }
   }
   async function doConvert(file) {
     const status = $('#convStatus');

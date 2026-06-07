@@ -5,7 +5,7 @@ FastAPI + MongoDB. Self-contained email/password auth (bcrypt + JWT).
 Sections: auth, materials (search), stock (monthly stocktaking + Excel),
 transactions (income/outcome), loans (reminders), dashboard.
 """
-from fastapi import FastAPI, APIRouter, Header, HTTPException, UploadFile, File
+from fastapi import FastAPI, APIRouter, Header, HTTPException, UploadFile, File, Form
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -23,6 +23,8 @@ from openpyxl.styles import Font, PatternFill, Alignment
 from io import BytesIO, StringIO
 import csv
 import json
+import re
+from openpyxl import load_workbook
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -679,6 +681,275 @@ async def convert_to_excel(file: UploadFile = File(...), authorization: Optional
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{safe}.xlsx"', "X-Rows": str(len(rows))}
     )
+
+# ==================== IMPORT (file -> records) + MONTHLY REPORT ====================
+
+HEADER_KEYS = {
+    'date': ['date', 'огноо'],
+    'type': ['type', 'төрөл'],
+    'amount': ['amount', 'дүн', 'мөнгө', 'нийт', 'total'],
+    'category': ['category', 'ангилал'],
+    'description': ['description', 'тайлбар', 'утга', 'гүйлгээ', 'note', 'тэмдэглэл'],
+    'name': ['name', 'нэр', 'материал', 'material'],
+    'unit': ['unit', 'нэгж'],
+    'price': ['price', 'үнэ', 'unit price'],
+    'supplier': ['supplier', 'нийлүүлэгч'],
+    'quantity': ['quantity', 'тоо', 'qty', 'ширхэг', 'хэмжээ'],
+}
+
+def _rows_from_upload(content: bytes, ext: str):
+    if ext in ('xlsx', 'xlsm'):
+        wb = load_workbook(BytesIO(content), data_only=True, read_only=True)
+        ws = wb.active
+        rows = []
+        for r in ws.iter_rows(values_only=True):
+            if r is None or all(c is None or str(c).strip() == '' for c in r):
+                continue
+            rows.append(list(r))
+        wb.close()
+        return rows
+    return _rows_from_file(content, ext)
+
+def _map_headers(header_row):
+    idx = {}
+    for i, h in enumerate(header_row):
+        hl = str(h if h is not None else '').strip().lower()
+        if not hl:
+            continue
+        for field, keys in HEADER_KEYS.items():
+            if field not in idx and any(k in hl for k in keys):
+                idx[field] = i
+    return idx
+
+def _cell(row, idx, field):
+    i = idx.get(field)
+    return row[i] if (i is not None and i < len(row)) else None
+
+def _to_num(v):
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = re.sub(r'[^\d.\-]', '', str(v if v is not None else ''))
+    if s in ('', '-', '.', '--'):
+        return 0.0
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+def _norm_date(v, default):
+    if v is None or str(v).strip() == '':
+        return default
+    if isinstance(v, datetime):
+        return v.strftime('%Y-%m-%d')
+    s = str(v).strip()[:10]
+    for fmt in ('%Y-%m-%d', '%Y/%m/%d', '%d/%m/%Y', '%m/%d/%Y', '%Y.%m.%d', '%d.%m.%Y'):
+        try:
+            return datetime.strptime(s, fmt).strftime('%Y-%m-%d')
+        except Exception:
+            pass
+    return default
+
+def _norm_type(v, amount):
+    s = str(v if v is not None else '').strip().lower()
+    if 'орлог' in s or s.startswith('inc') or s in ('in', '+'):
+        return 'income'
+    if 'зарлаг' in s or s.startswith('exp') or s.startswith('out') or s == '-':
+        return 'outcome'
+    return 'income' if amount >= 0 else 'outcome'
+
+def _parse_import(rows, kind, default_date):
+    if not rows or len(rows) < 2:
+        raise HTTPException(status_code=400, detail="Толгой мөр + дор хаяж 1 мөр хэрэгтэй / Need a header row + at least 1 data row")
+    idx = _map_headers(rows[0])
+    records = []
+    if kind == 'ledger':
+        if 'amount' not in idx:
+            raise HTTPException(status_code=400, detail="'Дүн / Amount' багана олдсонгүй / 'Amount' column not found")
+        for r in rows[1:]:
+            amt = _to_num(_cell(r, idx, 'amount'))
+            if amt == 0:
+                continue
+            records.append({
+                'date': _norm_date(_cell(r, idx, 'date'), default_date),
+                'type': _norm_type(_cell(r, idx, 'type'), amt), 'amount': abs(amt),
+                'category': str(_cell(r, idx, 'category') or '').strip(),
+                'description': str(_cell(r, idx, 'description') or '').strip(),
+            })
+    elif kind == 'materials':
+        if 'name' not in idx:
+            raise HTTPException(status_code=400, detail="'Нэр / Name' багана олдсонгүй / 'Name' column not found")
+        for r in rows[1:]:
+            name = str(_cell(r, idx, 'name') or '').strip()
+            if not name:
+                continue
+            q = _cell(r, idx, 'quantity')
+            records.append({
+                'name': name, 'category': str(_cell(r, idx, 'category') or '').strip(),
+                'unit': (str(_cell(r, idx, 'unit') or '').strip() or 'ш'),
+                'price': _to_num(_cell(r, idx, 'price')),
+                'supplier': str(_cell(r, idx, 'supplier') or '').strip(),
+                'quantity': (_to_num(q) if q is not None and str(q).strip() != '' else None),
+            })
+    else:
+        raise HTTPException(status_code=400, detail="kind must be 'ledger' or 'materials'")
+    return records, list(idx.keys())
+
+@api_router.post("/import")
+async def import_data(
+    file: UploadFile = File(...),
+    kind: str = Form(...),
+    month: str = Form(""),
+    confirm: str = Form("false"),
+    authorization: Optional[str] = Header(None),
+):
+    user = await get_current_user(authorization)
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Хоосон файл / Empty file")
+    if len(content) > 8_000_000:
+        raise HTTPException(status_code=413, detail="Файл хэт том / File too large")
+    fname = file.filename or "file"
+    ext = fname.rsplit('.', 1)[-1].lower() if '.' in fname else ''
+    rows = _rows_from_upload(content, ext)
+    default_date = (month + "-15") if re.match(r'^\d{4}-\d{2}$', month or '') else datetime.now().strftime("%Y-%m-%d")
+    records, columns = _parse_import(rows, kind, default_date)
+    if not records:
+        raise HTTPException(status_code=400, detail="Импортлох мөр олдсонгүй / No rows to import")
+
+    if str(confirm).lower() != "true":
+        return {"preview": records[:12], "total": len(records), "columns": columns, "kind": kind}
+
+    now = datetime.now(timezone.utc)
+    if kind == 'ledger':
+        docs = [{
+            "transaction_id": f"txn_{uuid.uuid4().hex[:12]}", "user_id": user["user_id"],
+            "type": rec['type'], "category": rec['category'], "amount": rec['amount'],
+            "description": rec['description'], "date": rec['date'], "created_at": now,
+            "material_id": "", "material_name": "", "quantity": None, "unit_price": None,
+        } for rec in records]
+        if docs:
+            await db.transactions.insert_many(docs)
+        return {"imported": len(docs), "kind": kind}
+    else:
+        mat_count, stock_count = 0, 0
+        for rec in records:
+            existing = await db.materials.find_one({"user_id": user["user_id"], "name": rec['name']}, {"_id": 0})
+            if existing:
+                mid = existing["material_id"]
+                upd = {}
+                if rec['price']:
+                    upd['price'] = rec['price']
+                if rec['supplier']:
+                    upd['supplier'] = rec['supplier']
+                if rec['category']:
+                    upd['category'] = rec['category']
+                if upd:
+                    await db.materials.update_one({"material_id": mid}, {"$set": upd})
+            else:
+                mid = f"mat_{uuid.uuid4().hex[:12]}"
+                await db.materials.insert_one({
+                    "material_id": mid, "user_id": user["user_id"], "name": rec['name'],
+                    "category": rec['category'], "supplier": rec['supplier'], "price": rec['price'],
+                    "unit": rec['unit'], "min_stock": 0, "description": "", "image_url": "", "created_at": now,
+                })
+                mat_count += 1
+            if rec['quantity']:
+                d = datetime.strptime(default_date, "%Y-%m-%d")
+                await db.stock_entries.insert_one({
+                    "entry_id": f"stock_{uuid.uuid4().hex[:12]}", "user_id": user["user_id"],
+                    "material_id": mid, "material_name": rec['name'], "unit": rec['unit'],
+                    "quantity": rec['quantity'], "date": default_date, "month": d.month, "year": d.year,
+                    "created_at": now,
+                })
+                stock_count += 1
+        return {"imported": len(records), "materials_added": mat_count, "stock_added": stock_count, "kind": kind}
+
+@api_router.get("/import/template")
+async def import_template(kind: str, authorization: Optional[str] = Header(None)):
+    await get_current_user(authorization)
+    wb = Workbook(); ws = wb.active
+    fill = PatternFill(start_color="0F4C81", end_color="0F4C81", fill_type="solid")
+    font = Font(bold=True, color="FFFFFF")
+    if kind == 'ledger':
+        ws.title = "Orlogo-Zarlaga"
+        headers = ["Огноо/Date", "Төрөл/Type", "Дүн/Amount", "Ангилал/Category", "Тайлбар/Description"]
+        sample = [["2026-06-05", "Орлого/income", 5000000, "Борлуулалт", "Гэрээ"],
+                  ["2026-06-06", "Зарлага/expense", 555000, "Материал", "Цемент"]]
+    else:
+        kind = 'materials'
+        ws.title = "Material"
+        headers = ["Нэр/Name", "Ангилал/Category", "Нэгж/Unit", "Нэгж үнэ/Price", "Нийлүүлэгч/Supplier", "Тоо хэмжээ/Quantity"]
+        sample = [["Цемент 500", "Цемент", "уут", 18500, "Хөтөл", 40],
+                  ["Арматур 12мм", "Төмөр", "м", 3200, "Дархан", 455]]
+    for c, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=c, value=h); cell.fill = fill; cell.font = font; cell.alignment = Alignment(horizontal="center")
+    for ri, row in enumerate(sample, 2):
+        for ci, val in enumerate(row, 1):
+            ws.cell(row=ri, column=ci, value=val)
+    for col in ws.columns:
+        w = max((len(str(c.value)) for c in col if c.value is not None), default=10)
+        ws.column_dimensions[col[0].column_letter].width = w + 4
+    buf = BytesIO(); wb.save(buf); buf.seek(0)
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="template_{kind}.xlsx"'})
+
+@api_router.get("/report/monthly")
+async def monthly_report(month: int, year: int, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    uid_q = {"user_id": user["user_id"]}
+    start = f"{year}-{month:02d}-01"
+    end = f"{year+1}-01-01" if month == 12 else f"{year}-{(month+1):02d}-01"
+    txns = await db.transactions.find({**uid_q, "date": {"$gte": start, "$lt": end}}, {"_id": 0}).sort("date", 1).to_list(20000)
+    stock = await db.stock_entries.find({**uid_q, "month": month, "year": year}, {"_id": 0}).sort("date", 1).to_list(20000)
+    materials = await db.materials.find(uid_q, {"_id": 0}).sort("name", 1).to_list(5000)
+    loans = await db.loans.find(uid_q, {"_id": 0}).to_list(2000)
+
+    wb = Workbook()
+    fill = PatternFill(start_color="0F4C81", end_color="0F4C81", fill_type="solid")
+    hf = Font(bold=True, color="FFFFFF")
+
+    def sheet(title, headers, data):
+        ws = wb.create_sheet(title)
+        for c, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=c, value=h); cell.fill = fill; cell.font = hf; cell.alignment = Alignment(horizontal="center")
+        for ri, row in enumerate(data, 2):
+            for ci, val in enumerate(row, 1):
+                ws.cell(row=ri, column=ci, value=val)
+        for col in ws.columns:
+            w = max((len(str(c.value)) for c in col if c.value is not None), default=10)
+            ws.column_dimensions[col[0].column_letter].width = min(w + 3, 50)
+        ws.freeze_panes = "A2"
+
+    inc = sum(t['amount'] for t in txns if t['type'] == 'income')
+    exp = sum(t['amount'] for t in txns if t['type'] == 'outcome')
+    summ = wb.active; summ.title = "Хураангуй-Summary"
+    co = user.get('company') or ''
+    srows = [
+        [co], [f"{year}-{month:02d} сарын тайлан / Monthly report"], [],
+        ["Нийт орлого / Income", inc], ["Нийт зарлага / Expense", exp], ["Зөрүү / Net", inc - exp], [],
+        ["Гүйлгээ / Transactions", len(txns)], ["Тооллого / Stock entries", len(stock)],
+        ["Материал / Materials", len(materials)], ["Зээл / Loans", len(loans)],
+    ]
+    for ri, row in enumerate(srows, 1):
+        for ci, val in enumerate(row, 1):
+            cell = summ.cell(row=ri, column=ci, value=val)
+            if ri <= 2:
+                cell.font = Font(bold=True, size=13 if ri == 1 else 11)
+    summ.column_dimensions['A'].width = 28; summ.column_dimensions['B'].width = 18
+
+    sheet("Орлого-Зарлага", ["Огноо", "Төрөл", "Ангилал", "Утга", "Дүн (₮)"],
+          [[t['date'], ("Орлого" if t['type'] == 'income' else "Зарлага"), t.get('category', ''), t.get('description', ''), t['amount']] for t in txns])
+    sheet("Тооллого-Stock", ["Огноо", "Материал", "Нэгж", "Тоо хэмжээ"],
+          [[s['date'], s['material_name'], s.get('unit', ''), s['quantity']] for s in stock])
+    sheet("Материал-Materials", ["Нэр", "Ангилал", "Нэгж", "Нэгж үнэ (₮)", "Нийлүүлэгч"],
+          [[m['name'], m.get('category', ''), m.get('unit', ''), m.get('price', 0), m.get('supplier', '')] for m in materials])
+    sheet("Зээл-Loans", ["Зээлдүүлэгч", "Үлдэгдэл (₮)", "Хүү %", "Төлөлт", "Дараагийн төлбөр", "Төлөв"],
+          [[l['name'], l['amount'], l.get('interest_rate', 0), l.get('payment_amount', 0), l.get('next_payment_date', ''), l.get('status', '')] for l in loans])
+
+    buf = BytesIO(); wb.save(buf); buf.seek(0)
+    safe = "".join(c if (ord(c) < 128 and c not in '\\/:*?"<>|') else "_" for c in (co or "report")).strip() or "report"
+    return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                             headers={"Content-Disposition": f'attachment; filename="{safe}_{year}-{month:02d}.xlsx"'})
 
 # ==================== APP WIRING ====================
 
