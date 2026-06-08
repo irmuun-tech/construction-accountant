@@ -292,6 +292,26 @@ textarea { resize: vertical; min-height: 60px; }
 @keyframes barFill { to { width: 100%; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---------- "Server waking up" overlay (free-tier cold start) ---------- */
+#wakingOverlay {
+  position: fixed; inset: 0; z-index: 9999;
+  display: flex; align-items: center; justify-content: center; padding: 1.6rem;
+  background: radial-gradient(125% 125% at 50% 0%, #16407e 0%, #0a1a30 70%);
+  color: #fff; opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity .4s ease, visibility .4s ease;
+}
+#wakingOverlay.show { opacity: 1; visibility: visible; pointer-events: auto; }
+#wakingOverlay .waking-box { text-align: center; max-width: 440px; animation: introUp .5s ease both; }
+#wakingOverlay .waking-spin {
+  width: 56px; height: 56px; margin: 0 auto 1.3rem;
+  border: 4px solid rgba(255,255,255,.16); border-top-color: #f59e0b;
+  border-radius: 50%; animation: spin .8s linear infinite;
+}
+#wakingOverlay .waking-title { font-size: 1.4rem; font-weight: 800; letter-spacing: .2px; }
+#wakingOverlay .waking-title-en { font-size: .9rem; font-weight: 700; color: #9fb3cc; letter-spacing: .6px; margin-top: .2rem; }
+#wakingOverlay .waking-sub { margin-top: 1.05rem; font-size: .85rem; line-height: 1.65; color: #c4d3e6; }
+@media (prefers-reduced-motion: reduce) { #wakingOverlay .waking-spin { animation-duration: 1.6s; } }
+
 /* ---------- Helpers ---------- */
 .hidden { display: none !important; }
 .muted { color: var(--muted); }

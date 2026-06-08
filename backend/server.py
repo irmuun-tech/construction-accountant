@@ -5,7 +5,7 @@ FastAPI + MongoDB. Self-contained email/password auth (bcrypt + JWT).
 Sections: auth, materials (search), stock (monthly stocktaking + Excel),
 transactions (income/outcome), loans (reminders), dashboard.
 """
-from fastapi import FastAPI, APIRouter, Header, HTTPException, UploadFile, File, Form
+from fastapi import FastAPI, APIRouter, Header, HTTPException, UploadFile, File, Form, Request
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -24,6 +24,8 @@ from io import BytesIO, StringIO
 import csv
 import json
 import re
+import time
+from collections import defaultdict
 from openpyxl import load_workbook
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -38,6 +40,22 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-only-change-me')
 JWT_ALGO = 'HS256'
 JWT_DAYS = 30
 CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*')
+# Optional signup gate: set INVITE_CODE on the host (one or more, comma-separated).
+# If empty, registration stays open. If set, new users must enter a matching code.
+INVITE_CODES = [c.strip() for c in os.environ.get('INVITE_CODE', '').split(',') if c.strip()]
+
+# --- Simple in-memory rate limiting (per process) ---
+_RL = defaultdict(list)
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get('x-forwarded-for')
+    return (fwd.split(',')[0].strip() if fwd else (request.client.host if request.client else 'unknown'))
+def _rate_limit(key: str, max_calls: int, window: int = 60):
+    now = time.time()
+    hits = [t for t in _RL[key] if now - t < window]
+    if len(hits) >= max_calls:
+        raise HTTPException(status_code=429, detail="Хэт олон оролдлого, түр хүлээнэ үү / Too many requests, please slow down")
+    hits.append(now)
+    _RL[key] = hits
 
 client = AsyncIOMotorClient(mongo_url)
 db = client[db_name]
@@ -54,6 +72,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
     name: str
+    invite_code: Optional[str] = ""
 
 class LoginRequest(BaseModel):
     email: EmailStr
@@ -197,7 +216,10 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
 # ==================== AUTH ENDPOINTS ====================
 
 @api_router.post("/auth/register", response_model=AuthResponse)
-async def register(body: RegisterRequest):
+async def register(body: RegisterRequest, request: Request):
+    _rate_limit("reg:" + _client_ip(request), 15, 60)
+    if INVITE_CODES and (body.invite_code or "").strip() not in INVITE_CODES:
+        raise HTTPException(status_code=403, detail="Урилгын код буруу эсвэл дутуу байна / Invalid or missing invite code")
     existing = await db.users.find_one({"email": body.email.lower()})
     if existing:
         raise HTTPException(status_code=409, detail="Энэ имэйл бүртгэлтэй байна / Email already registered")
@@ -214,7 +236,8 @@ async def register(body: RegisterRequest):
     return AuthResponse(token=token, user=UserResponse(user_id=user_id, email=body.email.lower(), name=body.name, company=""))
 
 @api_router.post("/auth/login", response_model=AuthResponse)
-async def login(body: LoginRequest):
+async def login(body: LoginRequest, request: Request):
+    _rate_limit("login:" + _client_ip(request), 30, 60)
     user = await db.users.find_one({"email": body.email.lower()})
     if not user or not verify_password(body.password, user.get("password", "")):
         raise HTTPException(status_code=401, detail="Имэйл эсвэл нууц үг буруу / Wrong email or password")
@@ -861,6 +884,7 @@ async def import_data(
     authorization: Optional[str] = Header(None),
 ):
     user = await get_current_user(authorization)
+    _rate_limit("imp:" + user["user_id"], 60, 60)
     content = await file.read()
     if not content:
         raise HTTPException(status_code=400, detail="Хоосон файл / Empty file")
@@ -990,20 +1014,36 @@ async def monthly_report(month: int, year: int, authorization: Optional[str] = H
 
     inc = sum(t['amount'] for t in txns if t['type'] == 'income')
     exp = sum(t['amount'] for t in txns if t['type'] == 'outcome')
+    # Break income & expense down by category (Цалин, Тээвэр, Материал, Түрээс ...)
+    exp_by, inc_by = {}, {}
+    for t in txns:
+        cat = (str(t.get('category') or '').strip() or '— (ангилалгүй)')
+        if t['type'] == 'income':
+            inc_by[cat] = inc_by.get(cat, 0) + t['amount']
+        else:
+            exp_by[cat] = exp_by.get(cat, 0) + t['amount']
     summ = wb.active; summ.title = "Хураангуй-Summary"
     co = user.get('company') or ''
     srows = [
         [co], [f"{year}-{month:02d} сарын тайлан / Monthly report"], [],
-        ["Нийт орлого / Income", inc], ["Нийт зарлага / Expense", exp], ["Зөрүү / Net", inc - exp], [],
-        ["Гүйлгээ / Transactions", len(txns)], ["Тооллого / Stock entries", len(stock)],
-        ["Материал / Materials", len(materials)], ["Зээл / Loans", len(loans)],
+        ["Нийт орлого / Total income", inc], ["Нийт зарлага / Total expense", exp], ["Зөрүү / Net", inc - exp], [],
+        ["── ЗАРЛАГА ангиллаар / EXPENSE by category ──"],
     ]
+    for cat, v in sorted(exp_by.items(), key=lambda x: -x[1]):
+        srows.append([cat, v])
+    srows += [[], ["── ОРЛОГО ангиллаар / INCOME by category ──"]]
+    for cat, v in sorted(inc_by.items(), key=lambda x: -x[1]):
+        srows.append([cat, v])
+    srows += [[], ["Гүйлгээ / Transactions", len(txns)], ["Тооллого / Stock entries", len(stock)],
+              ["Материал / Materials", len(materials)], ["Зээл / Loans", len(loans)]]
     for ri, row in enumerate(srows, 1):
         for ci, val in enumerate(row, 1):
-            cell = summ.cell(row=ri, column=ci, value=val)
-            if ri <= 2:
-                cell.font = Font(bold=True, size=13 if ri == 1 else 11)
-    summ.column_dimensions['A'].width = 28; summ.column_dimensions['B'].width = 18
+            summ.cell(row=ri, column=ci, value=val)
+        a = row[0] if len(row) > 0 else None
+        b = row[1] if len(row) > 1 else None
+        if a not in (None, '') and (b is None or b == ''):
+            summ.cell(row=ri, column=1).font = Font(bold=True, size=13 if ri == 1 else 11)
+    summ.column_dimensions['A'].width = 36; summ.column_dimensions['B'].width = 18
 
     sheet("Орлого-Зарлага", ["Огноо", "Төрөл", "Ангилал", "Утга", "Дүн (₮)"],
           [[t['date'], ("Орлого" if t['type'] == 'income' else "Зарлага"), t.get('category', ''), t.get('description', ''), t['amount']] for t in txns])

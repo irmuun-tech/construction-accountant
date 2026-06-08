@@ -77,7 +77,8 @@
     imp_choose: ['Файл сонгох', 'Choose file'], imp_preview: ['Урьдчилан харах', 'Preview'],
     imp_import_n: ['мөр оруулах', 'rows — Import'], imp_done: ['мөр орлоо', 'rows imported'],
     imp_or_convert: ['Эсвэл зүгээр Excel болгох (хадгалахгүй):', 'Or just convert a file to Excel (no import):'],
-    report_download: ['Сарын Excel татах', 'Download month Excel'], report_month: ['Тайлант сар', 'Report month']
+    report_download: ['Сарын Excel татах', 'Download month Excel'], report_month: ['Тайлант сар', 'Report month'],
+    imp_no_type: ['"Төрөл" багана алга — бүгд Орлого болж орно. Хэрэв материалын жагсаалт бол дээрээс "📦 Материал" сонгоно уу.', 'No "Type" column found — everything will be Income. If this is a materials list, pick "📦 Materials" above.']
   };
   function T(key) { const e = STR[key]; if (!e) return key; if (lang === 'mn') return e[0]; if (lang === 'en') return e[1]; return e[0] + ' / ' + e[1]; }
 
@@ -110,13 +111,6 @@
     for (const key in MAT_TERMS) if (k.includes(key)) return { q: MAT_TERMS[key], recognized: true };
     return { q: k, recognized: false };
   }
-  async function translateMn(text) {
-    try {
-      const u = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=mn&tl=en&dt=t&q=' + encodeURIComponent(text);
-      const r = await fetch(u); const j = await r.json();
-      return (j[0] || []).map(s => s[0]).join('').trim();
-    } catch (e) { return ''; }
-  }
   // Openverse — openly-licensed real photos (best for product shots).
   async function openverseImages(query) {
     try {
@@ -145,14 +139,10 @@
     'soldier', 'military', 'cartoon', 'toy', 'museum', 'sunset', 'hill', 'street', 'house', 'building art', 'mural'];
   function negScore(title) { const t = (title || '').toLowerCase(); let n = 0; for (const k of NEG_WORDS) if (t.includes(k)) n++; return n; }
   // Query both sources, require the HEAD material word in the title, then rank by total
-  // keyword match. Broadens to the head word alone if too few hits. Unknown Mongolian → translated.
+  // keyword match. Broadens to the head word alone if too few hits.
   async function searchMaterialImages(name) {
-    const { q, recognized } = termFor(name);
-    let query = q;
-    if (!recognized) {
-      const tr = await translateMn(name);
-      if (tr && tr.toLowerCase() !== name.toLowerCase()) query = tr;
-    }
+    const { q } = termFor(name);
+    const query = q;
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     const head = words[0] || query.toLowerCase();
     const kws = [...new Set(words.filter(w => w.length > 2).flatMap(w => (w.endsWith('s') ? [w, w.slice(0, -1)] : [w])))];
@@ -175,9 +165,64 @@
     pool.sort((a, b) => b.eff - a.eff || a.src - b.src || a.idx - b.idx);
     return pool.slice(0, 12).map(x => x.url);
   }
+  // Exact category pictures (shown when searching + as the default material thumbnail).
+  const CATEGORY_IMAGES = {
+    cement: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Energetically_Modified_Cement_%28EMC%29_Lule%C3%A5_Sweden_08_2020.jpg/640px-Energetically_Modified_Cement_%28EMC%29_Lule%C3%A5_Sweden_08_2020.jpg',
+    brick: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c8/Ivy_Hedera_Red_Brick_Wall_2892px.jpg/640px-Ivy_Hedera_Red_Brick_Wall_2892px.jpg',
+    steel: 'https://upload.wikimedia.org/wikipedia/commons/thumb/8/85/Rusty_rebar_nets.jpg/640px-Rusty_rebar_nets.jpg',
+    wood: 'https://upload.wikimedia.org/wikipedia/commons/thumb/4/46/Stacked_wood_planks_%28Unsplash%29.jpg/640px-Stacked_wood_planks_%28Unsplash%29.jpg',
+    electrical: 'https://upload.wikimedia.org/wikipedia/commons/thumb/e/ee/Cable-lacing-harness-mockup.jpg/640px-Cable-lacing-harness-mockup.jpg',
+    insulation: 'https://upload.wikimedia.org/wikipedia/commons/thumb/e/e6/Polyisocyanurate_insulation_boards.jpg/640px-Polyisocyanurate_insulation_boards.jpg',
+    plumbing: 'https://upload.wikimedia.org/wikipedia/commons/thumb/1/1d/PVC_plumbing_fittings_in_Awka.jpg/640px-PVC_plumbing_fittings_in_Awka.jpg',
+    putty: '',
+    plaster: '',
+    paint: 'https://upload.wikimedia.org/wikipedia/commons/c/c3/Farm-Fresh_table_paint_can.png',
+    finishing: 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/23/Orange_terracotta_ceramic_scuffed_tile_pattern_floor_texture.jpg/640px-Orange_terracotta_ceramic_scuffed_tile_pattern_floor_texture.jpg',
+    tools: 'https://upload.wikimedia.org/wikipedia/commons/thumb/2/2c/Woodworking_hand_tools_on_timber_planks_01.jpg/640px-Woodworking_hand_tools_on_timber_planks_01.jpg',
+    other: 'https://upload.wikimedia.org/wikipedia/commons/thumb/d/d1/Gravel_Stones.jpg/640px-Gravel_Stones.jpg'
+  };
+  const CAT_KEYS = {
+    cement: ['cement', 'цемент', 'tsement', 'семент', 'sement'],
+    brick: ['brick', 'тоосго', 'toosgo', 'toosog'],
+    steel: ['steel', 'rebar', 'metal', 'iron', 'төмөр', 'tumur', 'tomor', 'tömör', 'арматур', 'armatur'],
+    wood: ['wood', 'timber', 'lumber', 'plank', 'мод', 'банз', 'banz'],
+    electrical: ['electric', 'cable', 'wire', 'цахилгаан', 'tsahilgaan', 'кабель', 'утас', 'розетка'],
+    insulation: ['insulation', 'дулаалга', 'dulaalga', 'duudlaga'],
+    plumbing: ['plumb', 'pipe', 'sanitary', 'сантехник', 'santehnik', 'хоолой', 'hooloi'],
+    putty: ['putty', 'замаск', 'zamask', 'zamaasag', 'zamasag'],
+    plaster: ['plaster', 'shpaklevk', 'шпаклевк', 'шпаклёвк', 'gypsum', 'гипс', 'gips'],
+    paint: ['paint', 'будаг', 'budag'],
+    finishing: ['finish', 'засал', 'zasal'],
+    tools: ['tool', 'багаж', 'bagaj'],
+    other: ['other', 'бусад', 'busad']
+  };
+  function categoryFor(text) {
+    const t = (text || '').toLowerCase();
+    for (const cat in CAT_KEYS) for (const k of CAT_KEYS[cat]) if (k && t.includes(k)) return cat;
+    return null;
+  }
+  function catImageFor(text) { const c = categoryFor(text); return c ? CATEGORY_IMAGES[c] : ''; }
+  // Resize a chosen photo to a small JPEG data-URL so it stores cleanly in the DB.
+  function fileToDataURL(file, maxW, cb) {
+    const fr = new FileReader();
+    fr.onerror = () => cb('');
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => cb('');
+      img.onload = () => {
+        const s = Math.min(1, maxW / img.width), w = Math.round(img.width * s), h = Math.round(img.height * s);
+        const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+        cv.getContext('2d').drawImage(img, 0, 0, w, h);
+        try { cb(cv.toDataURL('image/jpeg', 0.72)); } catch (e) { cb(''); }
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  }
   function matThumb(m) {
-    return m.image_url
-      ? `<img class="mat-thumb zoomable" src="${esc(m.image_url)}" referrerpolicy="no-referrer" loading="lazy" title="${esc(m.name)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'mat-thumb ph',textContent:'📦'}))">`
+    const url = m.image_url || catImageFor((m.name || '') + ' ' + (m.category || ''));
+    return url
+      ? `<img class="mat-thumb zoomable" src="${esc(url)}" referrerpolicy="no-referrer" loading="lazy" title="${esc(m.name)}" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'mat-thumb ph',textContent:'📦'}))">`
       : `<span class="mat-thumb ph">📦</span>`;
   }
   /* ---------- Lightbox (click image to enlarge) ---------- */
@@ -221,20 +266,66 @@
   $('#modalClose').addEventListener('click', closeModal);
   $('#modal').addEventListener('click', e => { if (e.target === $('#modal')) closeModal(); });
 
+  /* ---------- "Server is waking up" overlay (free-tier cold start) ----------
+     The free hosting plan puts the server to sleep after ~15 min of no use; the
+     next request then takes ~30–50s to wake it. If any request runs longer than
+     the threshold below, show a friendly overlay so the wait doesn't look like a
+     frozen or broken app. It hides automatically once the server responds. */
+  let _wakeInflight = 0, _wakeTimer = null;
+  const WAKE_THRESHOLD_MS = 3000;
+  function _ensureWakeEl() {
+    let el = document.getElementById('wakingOverlay');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'wakingOverlay';
+      el.innerHTML =
+        '<div class="waking-box">' +
+          '<div class="waking-spin"></div>' +
+          '<div class="waking-title">Сервер сэрж байна…</div>' +
+          '<div class="waking-title-en">Waking up the server…</div>' +
+          '<div class="waking-sub">Үнэгүй сервер амарч байсан тул эхний ачаалал 30–50 секунд үргэлжилж магадгүй. Түр хүлээнэ үү.<br>' +
+          'The free server was asleep — this first load can take about 30–50 seconds. Please wait.</div>' +
+        '</div>';
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function _wakeStart() {
+    _wakeInflight++;
+    if (_wakeTimer === null) {
+      _wakeTimer = setTimeout(function () {
+        if (_wakeInflight > 0) _ensureWakeEl().classList.add('show');
+      }, WAKE_THRESHOLD_MS);
+    }
+  }
+  function _wakeEnd() {
+    _wakeInflight = Math.max(0, _wakeInflight - 1);
+    if (_wakeInflight === 0) {
+      if (_wakeTimer !== null) { clearTimeout(_wakeTimer); _wakeTimer = null; }
+      const el = document.getElementById('wakingOverlay');
+      if (el) el.classList.remove('show');
+    }
+  }
+
   /* ---------- API client ---------- */
   async function api(path, opts = {}) {
     const o = { method: opts.method || 'GET', headers: Object.assign({}, opts.headers || {}) };
     if (opts.body !== undefined) { o.headers['Content-Type'] = 'application/json'; o.body = JSON.stringify(opts.body); }
     if (token) o.headers['Authorization'] = 'Bearer ' + token;
-    let res;
-    try { res = await fetch(API + path, o); }
-    catch (e) { $('#cloudDot').className = 'cloud-dot off'; throw new Error(lang === 'en' ? 'Cannot reach server' : 'Сервер холбогдсонгүй'); }
-    $('#cloudDot').className = 'cloud-dot ok';
-    if (res.status === 401) { doLogout(); throw new Error('unauthorized'); }
-    if (opts.raw) return res;
-    let data = null; try { data = await res.json(); } catch (e) { }
-    if (!res.ok) { const d = data && data.detail; throw new Error(typeof d === 'string' ? d : ('Error ' + res.status)); }
-    return data;
+    _wakeStart();
+    try {
+      let res;
+      try { res = await fetch(API + path, o); }
+      catch (e) { $('#cloudDot').className = 'cloud-dot off'; throw new Error(lang === 'en' ? 'Cannot reach server' : 'Сервер холбогдсонгүй'); }
+      $('#cloudDot').className = 'cloud-dot ok';
+      if (res.status === 401) { doLogout(); throw new Error('unauthorized'); }
+      if (opts.raw) return res;
+      let data = null; try { data = await res.json(); } catch (e) { }
+      if (!res.ok) { const d = data && data.detail; throw new Error(typeof d === 'string' ? d : ('Error ' + res.status)); }
+      return data;
+    } finally {
+      _wakeEnd();
+    }
   }
 
   /* ============================================================
@@ -255,6 +346,7 @@
     $('#tabLogin').classList.toggle('active', m === 'login');
     $('#tabRegister').classList.toggle('active', m === 'register');
     $('#regNameField').classList.toggle('hidden', m !== 'register');
+    $('#regCodeField').classList.toggle('hidden', m !== 'register');
     $('#authSubmit').textContent = m === 'login' ? 'Нэвтрэх / Login' : 'Бүртгүүлэх / Register';
     $('#authErr').textContent = '';
   }
@@ -271,7 +363,7 @@
     $('#authSubmit').disabled = true;
     try {
       const path = authMode === 'login' ? '/auth/login' : '/auth/register';
-      const body = authMode === 'login' ? { email, password: pass } : { email, password: pass, name };
+      const body = authMode === 'login' ? { email, password: pass } : { email, password: pass, name, invite_code: ($('#authCode') ? $('#authCode').value.trim() : '') };
       const data = await api(path, { method: 'POST', body });
       token = data.token; user = data.user;
       localStorage.setItem('ca_token', token); localStorage.setItem('ca_user', JSON.stringify(user));
@@ -371,7 +463,8 @@
       <div id="matResults"><div class="loading"><div class="spinner"></div></div></div>`;
     $('#addMat').onclick = () => materialForm();
     const deb = (fn) => { let t; return () => { clearTimeout(t); t = setTimeout(fn, 300); }; };
-    $('#mSearch').oninput = deb(() => { loadMatTable(); updateSearchPic(); });
+    $('#mSearch').oninput = deb(loadMatTable);
+    $('#mSearch').addEventListener('input', updateSearchPic);
     $('#mSup').oninput = deb(loadMatTable);
     $('#mMin').oninput = deb(loadMatTable);
     $('#mMax').oninput = deb(loadMatTable);
@@ -379,18 +472,14 @@
     await loadMatTable();
     updateSearchPic();
   }
-  // Live web-image preview of the searched material term.
-  let picSeq = 0;
-  async function updateSearchPic() {
+  // Show the exact category picture for whatever material is being searched.
+  function updateSearchPic() {
     const box = $('#matSearchPic'); if (!box) return;
     const term = ($('#mSearch') ? $('#mSearch').value : '').trim();
-    if (term.length < 2) { box.classList.add('hidden'); box.innerHTML = ''; return; }
-    const seq = ++picSeq;
-    const imgs = await searchMaterialImages(term);
-    const b2 = $('#matSearchPic'); if (seq !== picSeq || !b2) return;
-    if (!imgs.length) { b2.classList.add('hidden'); b2.innerHTML = ''; return; }
-    b2.classList.remove('hidden');
-    b2.innerHTML = `<div class="sp-imgs">${imgs.slice(0, 4).map(u => `<img class="zoomable" src="${esc(u)}" referrerpolicy="no-referrer" onerror="this.remove()">`).join('')}</div><span class="muted">🔍 <b>${esc(term)}</b> · ${T('pick_image')}</span>`;
+    const url = term ? catImageFor(term) : '';
+    if (!url) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+    box.classList.remove('hidden');
+    box.innerHTML = `<img class="zoomable" src="${esc(url)}" referrerpolicy="no-referrer" onerror="this.closest('.search-pic').classList.add('hidden')"><span class="muted">🔍 <b>${esc(term)}</b></span>`;
   }
   // Re-renders only the results table (keeps toolbar + search focus while typing).
   let matSeq = 0;
@@ -421,7 +510,7 @@
   }
   function materialForm(m) {
     const e = m || { material_id: '', name: '', category: '', supplier: '', price: '', unit: 'ш', min_stock: '', description: '', image_url: '' };
-    let selectedImg = e.image_url || '';
+    let chosenImg = e.image_url || '';
     openModal(m ? T('edit_material') : T('add_material'), `
       ${datalist('catList', MAT_CATS)}
       <div class="field"><label>${T('name')} *</label><input id="f_name" value="${esc(e.name)}"></div>
@@ -436,44 +525,27 @@
       <div class="field"><label>${T('supplier')}</label><input id="f_sup" value="${esc(e.supplier)}"></div>
       <div class="field"><label>${T('description')}</label><input id="f_desc" value="${esc(e.description)}"></div>
       <div class="field">
-        <label>🖼️ ${T('image')}</label>
-        <div id="imgPreview" class="mat-img-preview">${selectedImg ? `<img class="zoomable" src="${esc(selectedImg)}" referrerpolicy="no-referrer">` : '📦'}</div>
-        <div style="display:flex; gap:.5rem; align-items:center">
-          <button type="button" class="btn sm" id="findImg">🔎 ${T('find_image')}</button>
-          <input id="f_imgurl" placeholder="${T('img_url_ph')}" value="${esc(selectedImg)}" style="flex:1">
+        <label>📷 Зураг / Photo</label>
+        <div id="imgPreview" class="mat-img-preview">${chosenImg ? `<img src="${esc(chosenImg)}" referrerpolicy="no-referrer">` : '📦'}</div>
+        <div style="display:flex; gap:.5rem; flex-wrap:wrap">
+          <button type="button" class="btn sm" id="pickPhoto">📷 Өөрийн зураг нэмэх / Add your photo</button>
+          <button type="button" class="btn sm ghost" id="clearPhoto">✕ Арилгах / Remove</button>
         </div>
-        <div id="imgStatus" class="hint"></div>
-        <div id="imgResults" class="mat-img-results"></div>
+        <input type="file" id="f_photo" accept="image/*" hidden>
+        <div class="hint">Утас/компьютероосоо зураг оруулна. Хоосон бол ангиллын зураг гарна. / Upload from your device; if empty, the category picture shows.</div>
       </div>
       <div class="modal-actions"><button class="btn ghost" id="f_cancel">${T('cancel')}</button><button class="btn primary" id="f_save">${T('save')}</button></div>`,
       body => {
-        const nameI = body.querySelector('#f_name'), urlI = body.querySelector('#f_imgurl');
-        const preview = body.querySelector('#imgPreview'), results = body.querySelector('#imgResults'), status = body.querySelector('#imgStatus');
-        function setPreview(url) { selectedImg = url || ''; preview.innerHTML = selectedImg ? `<img class="zoomable" src="${esc(selectedImg)}" referrerpolicy="no-referrer">` : '📦'; }
-        let imgSeq = 0;
-        async function runImgSearch() {
-          const q = nameI.value.trim(); if (q.length < 2) { status.textContent = ''; results.innerHTML = ''; return; }
-          status.textContent = T('searching_img'); results.innerHTML = '';
-          const seq = ++imgSeq; const imgs = await searchMaterialImages(q);
-          if (seq !== imgSeq) return;
-          if (!imgs.length) { status.textContent = T('no_image'); return; }
-          status.textContent = T('pick_image');
-          results.innerHTML = imgs.slice(0, 6).map(u => `<img src="${esc(u)}" referrerpolicy="no-referrer" data-u="${esc(u)}" onerror="this.remove()">`).join('');
-          results.querySelectorAll('img').forEach(img => img.onclick = () => {
-            results.querySelectorAll('img').forEach(x => x.classList.remove('selected'));
-            img.classList.add('selected'); urlI.value = img.dataset.u; setPreview(img.dataset.u);
-          });
-        }
-        const deb = (fn) => { let t; return () => { clearTimeout(t); t = setTimeout(fn, 600); }; };
-        nameI.addEventListener('input', deb(runImgSearch));
-        body.querySelector('#findImg').onclick = runImgSearch;
-        urlI.addEventListener('input', () => setPreview(urlI.value.trim()));
-        if (e.name && !selectedImg) runImgSearch();
+        const preview = body.querySelector('#imgPreview'), fileInput = body.querySelector('#f_photo');
+        const render = () => { preview.innerHTML = chosenImg ? `<img src="${esc(chosenImg)}" referrerpolicy="no-referrer">` : '📦'; };
+        body.querySelector('#pickPhoto').onclick = () => fileInput.click();
+        fileInput.onchange = () => { const f = fileInput.files[0]; if (!f) return; fileToDataURL(f, 480, (d) => { if (d) { chosenImg = d; render(); } else toast('⚠️ Зураг'); }); };
+        body.querySelector('#clearPhoto').onclick = () => { chosenImg = ''; render(); };
         body.querySelector('#f_cancel').onclick = closeModal;
         body.querySelector('#f_save').onclick = async () => {
-          const name = nameI.value.trim();
+          const name = body.querySelector('#f_name').value.trim();
           if (!name) { toast(T('name') + ' *'); return; }
-          const payload = { name, category: body.querySelector('#f_cat').value.trim(), supplier: body.querySelector('#f_sup').value.trim(), price: num(body.querySelector('#f_price').value), unit: body.querySelector('#f_unit').value, min_stock: num(body.querySelector('#f_min').value), description: body.querySelector('#f_desc').value.trim(), image_url: (urlI.value.trim() || selectedImg || '') };
+          const payload = { name, category: body.querySelector('#f_cat').value.trim(), supplier: body.querySelector('#f_sup').value.trim(), price: num(body.querySelector('#f_price').value), unit: body.querySelector('#f_unit').value, min_stock: num(body.querySelector('#f_min').value), description: body.querySelector('#f_desc').value.trim(), image_url: chosenImg };
           try { await api(e.material_id ? '/materials/' + e.material_id : '/materials', { method: e.material_id ? 'PUT' : 'POST', body: payload }); closeModal(); toast(T('save')); viewMaterials(); }
           catch (err) { toast(err.message); }
         };
@@ -803,7 +875,8 @@
       head = `<th>${T('name')}</th><th>${T('category')}</th><th>${T('unit')}</th><th class="num">${T('unit_price')}</th><th>${T('supplier')}</th><th class="num">${T('qty')}</th>`;
       body = rows.map(r => `<tr><td><b>${esc(r.name)}</b></td><td>${esc(r.category || '-')}</td><td>${esc(unitLabel(r.unit))}</td><td class="num">${fmtMoney(r.price)}</td><td>${esc(r.supplier || '-')}</td><td class="num">${r.quantity != null ? fmtQty(r.quantity) : '-'}</td></tr>`).join('');
     }
-    $('#impResult').innerHTML = `<div class="card"><div class="section-title"><h3>${T('imp_preview')} · ${rows.length}/${j.total}</h3>
+    const warn = (kind === 'ledger' && !(j.columns || []).includes('type')) ? `<div class="alert warn">⚠️ ${T('imp_no_type')}</div>` : '';
+    $('#impResult').innerHTML = warn + `<div class="card"><div class="section-title"><h3>${T('imp_preview')} · ${rows.length}/${j.total}</h3>
       <button class="btn primary" id="doImportBtn">✅ ${j.total} ${T('imp_import_n')}</button></div>
       <div class="table-wrap"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div></div>`;
     $('#doImportBtn').onclick = () => confirmImport(file, kind, month);
