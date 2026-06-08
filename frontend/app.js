@@ -62,6 +62,13 @@
     lang_mn: ['Монгол', 'Mongolian'], lang_en: ['Англи', 'English'], lang_both: ['Хоёулаа', 'Both'],
     account: ['Бүртгэл', 'Account'], synced: ['Үүлэнд синк хийгдсэн', 'Synced to cloud'],
     login: ['Нэвтрэх', 'Login'], register: ['Бүртгүүлэх', 'Register'], password: ['Нууц үг', 'Password'],
+    sec_title: ['Нууцлал', 'Security'], cur_pass: ['Одоогийн нууц үг', 'Current password'], new_pass: ['Шинэ нууц үг', 'New password'],
+    change_pass: ['Нууц үг солих', 'Change password'], pwd_ok: ['Нууц үг шинэчлэгдлээ', 'Password updated'],
+    pwd_min: ['Шинэ нууц үг дор хаяж 6 тэмдэгт байх ёстой', 'New password must be at least 6 characters'],
+    pwd_need: ['Хоёр талбарыг бөглөнө үү', 'Fill in both fields'],
+    data_title: ['Өгөгдөл / Нөөшлөх', 'Data / Backup'], backup_btn: ['Бүх өгөгдлийг татах', 'Download all data'],
+    backup_hint: ['Бүх материал, гүйлгээ, тооллого, зээлийг нэг JSON файлд хадгална. Тогтмол татаж аюулгүй хуулбар хадгалаарай.', 'Saves all materials, transactions, stock and loans to one JSON file. Download regularly to keep a safe copy.'],
+    backup_done: ['Нөөц татагдлаа', 'Backup downloaded'],
     nav_convert: ['Импорт', 'Import'], conv_title: ['Excel рүү хөрвүүлэх', 'Convert to Excel'],
     conv_sub: ['CSV, TSV, JSON, текст файлыг .xlsx болгох', 'Turn CSV, TSV, JSON or text into .xlsx'],
     conv_drop: ['Файлаа энд чирж тавь', 'Drag & drop your file here'],
@@ -793,6 +800,19 @@
         <select id="s_lang" style="max-width:260px">${option('both', T('lang_both'), lang)}${option('mn', T('lang_mn'), lang)}${option('en', T('lang_en'), lang)}</select>
       </div>
       <div class="card mt">
+        <div class="section-title"><h3>🔒 ${T('sec_title')}</h3></div>
+        <div class="form-row">
+          <div class="field"><label>${T('cur_pass')}</label><input id="s_curpass" type="password" autocomplete="off"></div>
+          <div class="field"><label>${T('new_pass')}</label><input id="s_newpass" type="password" autocomplete="off"></div>
+        </div>
+        <button class="btn primary" id="changePassBtn">${T('change_pass')}</button>
+      </div>
+      <div class="card mt">
+        <div class="section-title"><h3>💾 ${T('data_title')}</h3></div>
+        <div class="hint">${T('backup_hint')}</div>
+        <button class="btn mt" id="backupBtn">⬇️ ${T('backup_btn')}</button>
+      </div>
+      <div class="card mt">
         <div class="section-title"><h3>🔑 ${T('account')}</h3></div>
         <div class="hint">API: ${esc(API)}</div>
         <button class="btn danger mt" id="logoutBtn">${T('logout')}</button>
@@ -803,6 +823,32 @@
       catch (e) { toast(e.message); }
     };
     $('#s_lang').onchange = () => { lang = $('#s_lang').value; localStorage.setItem('ca_lang', lang); applyStaticI18n(); render(); };
+    $('#changePassBtn').onclick = async () => {
+      const cur = $('#s_curpass').value, nw = $('#s_newpass').value;
+      if (!cur || !nw) { toast(T('pwd_need')); return; }
+      if (nw.length < 6) { toast(T('pwd_min')); return; }
+      const btn = $('#changePassBtn'); btn.disabled = true;
+      try {
+        await api('/auth/change-password', { method: 'POST', body: { current_password: cur, new_password: nw } });
+        $('#s_curpass').value = ''; $('#s_newpass').value = ''; toast(T('pwd_ok'));
+      } catch (e) { toast(e.message); }
+      finally { btn.disabled = false; }
+    };
+    $('#backupBtn').onclick = async () => {
+      const btn = $('#backupBtn'); btn.disabled = true;
+      try {
+        const res = await api('/backup', { raw: true });
+        if (!res.ok) throw new Error('Error ' + res.status);
+        const blob = await res.blob();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'backup_' + todayISO() + '.json';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+        toast(T('backup_done'));
+      } catch (e) { toast(e.message); }
+      finally { btn.disabled = false; }
+    };
     $('#logoutBtn').onclick = () => { if (confirm(T('logout') + '?')) doLogout(); };
   }
 

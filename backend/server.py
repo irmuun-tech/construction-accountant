@@ -40,9 +40,11 @@ JWT_SECRET = os.environ.get('JWT_SECRET', 'dev-only-change-me')
 JWT_ALGO = 'HS256'
 JWT_DAYS = 30
 CORS_ORIGINS = os.environ.get('CORS_ORIGINS', '*')
-# Optional signup gate: set INVITE_CODE on the host (one or more, comma-separated).
-# If empty, registration stays open. If set, new users must enter a matching code.
+# Signup gate. Set INVITE_CODE on the host (one or more, comma-separated) to require a code.
 INVITE_CODES = [c.strip() for c in os.environ.get('INVITE_CODE', '').split(',') if c.strip()]
+# Registration is CLOSED by default for safety (no stranger can self-register).
+# Open it by setting REGISTRATION_OPEN=true, or by setting INVITE_CODE (code required).
+REGISTRATION_OPEN = os.environ.get('REGISTRATION_OPEN', 'false').strip().lower() in ('1', 'true', 'yes', 'on')
 
 # --- Simple in-memory rate limiting (per process) ---
 _RL = defaultdict(list)
@@ -91,6 +93,10 @@ class AuthResponse(BaseModel):
 class ProfileUpdate(BaseModel):
     name: Optional[str] = None
     company: Optional[str] = None
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str = Field(min_length=6)
 
 class MaterialCreate(BaseModel):
     name: str
@@ -218,8 +224,11 @@ async def get_current_user(authorization: Optional[str] = Header(None)):
 @api_router.post("/auth/register", response_model=AuthResponse)
 async def register(body: RegisterRequest, request: Request):
     _rate_limit("reg:" + _client_ip(request), 15, 60)
-    if INVITE_CODES and (body.invite_code or "").strip() not in INVITE_CODES:
-        raise HTTPException(status_code=403, detail="Урилгын код буруу эсвэл дутуу байна / Invalid or missing invite code")
+    if INVITE_CODES:
+        if (body.invite_code or "").strip() not in INVITE_CODES:
+            raise HTTPException(status_code=403, detail="Урилгын код буруу эсвэл дутуу байна / Invalid or missing invite code")
+    elif not REGISTRATION_OPEN:
+        raise HTTPException(status_code=403, detail="Шинэ бүртгэл хаалттай байна. Админтай холбогдоно уу / Registration is closed — contact the admin")
     existing = await db.users.find_one({"email": body.email.lower()})
     if existing:
         raise HTTPException(status_code=409, detail="Энэ имэйл бүртгэлтэй байна / Email already registered")
@@ -258,6 +267,15 @@ async def update_profile(body: ProfileUpdate, authorization: Optional[str] = Hea
         await db.users.update_one({"user_id": user["user_id"]}, {"$set": updates})
     user = await db.users.find_one({"user_id": user["user_id"]}, {"_id": 0, "password": 0})
     return UserResponse(**user)
+
+@api_router.post("/auth/change-password")
+async def change_password(body: PasswordChange, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    full = await db.users.find_one({"user_id": user["user_id"]})
+    if not full or not verify_password(body.current_password, full.get("password", "")):
+        raise HTTPException(status_code=400, detail="Одоогийн нууц үг буруу / Current password is incorrect")
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"password": hash_password(body.new_password)}})
+    return {"message": "Нууц үг шинэчлэгдлээ / Password updated"}
 
 # ==================== MATERIALS ====================
 
@@ -538,9 +556,18 @@ async def pay_loan(loan_id: str, authorization: Optional[str] = Header(None)):
     loan = await db.loans.find_one({"loan_id": loan_id, "user_id": user["user_id"]}, {"_id": 0})
     if not loan:
         raise HTTPException(status_code=404, detail="Loan not found")
-    delta = timedelta(days=7) if loan["frequency"] == "weekly" else timedelta(days=30)
+    freq = loan.get("frequency", "monthly")
+    delta = timedelta(days=7) if freq == "weekly" else timedelta(days=30)
     nxt = (datetime.strptime(loan["next_payment_date"], "%Y-%m-%d") + delta).strftime("%Y-%m-%d")
-    new_amount = max(0.0, loan["amount"] - loan.get("payment_amount", 0))
+    # Amortize: the payment first covers this period's interest, the rest reduces the balance.
+    # (rate == 0 → interest is 0 → behaves exactly like a flat payment, so old loans are unaffected.)
+    balance = float(loan.get("amount", 0))
+    rate = float(loan.get("interest_rate", 0) or 0)
+    payment = float(loan.get("payment_amount", 0) or 0)
+    periods_per_year = 52 if freq == "weekly" else 12
+    interest = round(balance * (rate / 100.0) / periods_per_year, 2) if rate > 0 else 0.0
+    principal = payment - interest
+    new_amount = round(max(0.0, balance - principal), 2)
     status = "paid" if new_amount <= 0 else "active"
     await db.loans.update_one({"loan_id": loan_id, "user_id": user["user_id"]},
                               {"$set": {"next_payment_date": nxt, "amount": new_amount, "status": status}})
@@ -588,6 +615,30 @@ async def dashboard(authorization: Optional[str] = Header(None)):
         monthly_income=monthly_income, monthly_outcome=monthly_outcome,
         active_loans=active_loans, upcoming_payments=upcoming
     )
+
+@api_router.get("/backup")
+async def backup_data(authorization: Optional[str] = Header(None)):
+    """Download ALL of the user's data as a single JSON file (self-serve backup)."""
+    user = await get_current_user(authorization)
+    uid_q = {"user_id": user["user_id"]}
+    materials = await db.materials.find(uid_q, {"_id": 0}).to_list(100000)
+    stock = await db.stock_entries.find(uid_q, {"_id": 0}).to_list(100000)
+    transactions = await db.transactions.find(uid_q, {"_id": 0}).to_list(100000)
+    loans = await db.loans.find(uid_q, {"_id": 0}).to_list(100000)
+    payload = {
+        "app": "construction-accountant",
+        "backup_version": 1,
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "user": {"email": user.get("email"), "name": user.get("name"), "company": user.get("company", "")},
+        "counts": {"materials": len(materials), "stock_entries": len(stock),
+                   "transactions": len(transactions), "loans": len(loans)},
+        "materials": materials, "stock_entries": stock,
+        "transactions": transactions, "loans": loans,
+    }
+    data = json.dumps(payload, ensure_ascii=False, default=str, indent=2).encode("utf-8")
+    fname = f"backup_{datetime.now().strftime('%Y-%m-%d')}.json"
+    return StreamingResponse(BytesIO(data), media_type="application/json",
+                             headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 @api_router.get("/health")
 async def health():

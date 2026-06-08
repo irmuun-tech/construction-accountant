@@ -1,0 +1,23 @@
+name: keep-alive
+
+# Pings the live app so Render's free plan doesn't put it to sleep (it sleeps
+# after ~15 min idle). Runs every 10 minutes. Public repo => free Actions minutes.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /api/health (wake the server)
+        run: |
+          URL="https://construction-accountant.onrender.com/api/health"
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 90 "$URL" || echo "000")
+            echo "Attempt $i -> HTTP $code"
+            if [ "$code" = "200" ]; then echo "App is awake."; exit 0; fi
+            sleep 20
+          done
+          echo "No 200 yet (server may have been waking). Not failing the run."
