@@ -1110,6 +1110,238 @@ async def monthly_report(month: int, year: int, authorization: Optional[str] = H
     return StreamingResponse(buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                              headers={"Content-Disposition": f'attachment; filename="{safe}_{year}-{month:02d}.xlsx"'})
 
+# ==================== WORKBOOK IMPORT + VIEWER (multi-sheet, messy-safe) ====================
+# Reads EVERY sheet of a real-world .xlsx (title rows, side-by-side tables, subtotals,
+# signatures, mixed layouts), stores each sheet's full grid for in-app viewing, and
+# extracts material/inventory items into Materials + Stock.
+
+def _wb_norm(v):
+    return ("" if v is None else str(v)).strip()
+
+def _wb_low(v):
+    return re.sub(r"\s+", " ", _wb_norm(v).lower()).strip()
+
+def _wb_num(v):
+    if isinstance(v, (int, float)):
+        return float(v)
+    s = re.sub(r"[^\d.\-]", "", _wb_norm(v))
+    if s in ("", "-", ".", "--"):
+        return None
+    try:
+        return float(s)
+    except Exception:
+        return None
+
+def _wb_classify(cell):
+    t = _wb_low(cell)
+    if not t:
+        return None
+    if ("үнэ" in t or "үне" in t) and ("нэгж" in t or "1ш" in t or "1 ш" in t) and "нийт" not in t:
+        return "price"
+    if "нийт үн" in t or "нийт дүн" in t:
+        return "total"
+    if "хэмжих" in t or t == "нэгж":
+        return "unit"
+    if "тоолсон тоо" in t or "тоо ширхэг" in t or t in ("тоо", "ширхэг", "т/ширхэг", "тоо ш") or ("тоо" in t and "ширхэг" in t):
+        return "qty"
+    if "бараа материал" in t or "материалын нэр" in t or "барааны нэр" in t or t == "материал" or t == "нэр" or "харьцаа" in t:
+        return "name"
+    return None
+
+_WB_JUNK = ("нийт", "тооллого хийсэн", "т/нярав", "х/нярав", "хүлээлгэн", "хүлээн авсан",
+            "байгууллагын нэр", "худалдан авагч", "д/д", "д/б", "№", "материалын нэр",
+            "бараа материал", "барааны нэр", "огноо", "тайлан")
+
+def _wb_is_junk(name):
+    t = _wb_low(name)
+    if not t or re.fullmatch(r"[.\s_\-]+", t):
+        return True
+    return any(t.startswith(j) for j in _WB_JUNK)
+
+def _wb_find_headers(rows):
+    out = []
+    for i, r in enumerate(rows):
+        fields = {}
+        for ci, c in enumerate(r):
+            f = _wb_classify(c)
+            if f and f not in fields:
+                fields[f] = ci
+        if "name" in fields and (("qty" in fields) or ("price" in fields) or ("total" in fields)):
+            out.append(i)
+    return out
+
+def _wb_blocks(row):
+    """One block per 'name' column — supports side-by-side tables on one sheet."""
+    name_cols = [ci for ci, c in enumerate(row) if _wb_classify(c) == "name"]
+    blocks = []
+    for k, nc in enumerate(name_cols):
+        end = name_cols[k + 1] if k + 1 < len(name_cols) else len(row) + 60
+        b = {"name": nc, "end": end}
+        for ci in range(nc, min(end, len(row))):
+            f = _wb_classify(row[ci])
+            if f in ("unit", "qty", "price", "total") and f not in b:
+                b[f] = ci
+        blocks.append(b)
+    return blocks
+
+def _wb_cellv(r, ci):
+    return r[ci] if (ci is not None and ci < len(r)) else None
+
+def _wb_extract(rows):
+    headers = _wb_find_headers(rows)
+    items = []
+    for hi, hrow in enumerate(headers):
+        nxt = headers[hi + 1] if hi + 1 < len(headers) else len(rows)
+        for b in _wb_blocks(rows[hrow]):
+            for ri in range(hrow + 1, nxt):
+                r = rows[ri]
+                name = _wb_norm(_wb_cellv(r, b.get("name")))
+                if _wb_is_junk(name):
+                    continue
+                qty = _wb_num(_wb_cellv(r, b.get("qty")))
+                price = _wb_num(_wb_cellv(r, b.get("price")))
+                total = _wb_num(_wb_cellv(r, b.get("total")))
+                unit = _wb_norm(_wb_cellv(r, b.get("unit")))
+                if not (qty or price or total):
+                    continue
+                items.append({"name": name, "unit": unit or "ш",
+                              "qty": qty or 0, "price": price or 0, "total": total or 0})
+    return items
+
+def _wb_cell_out(v):
+    if isinstance(v, (int, float)):
+        return v
+    if v is None:
+        return ""
+    return str(v)
+
+MAX_WB_ROWS = 1000
+MAX_WB_COLS = 60
+
+def _wb_parse(content: bytes):
+    wb = load_workbook(BytesIO(content), data_only=True, read_only=True)
+    sheets = []
+    for ws in wb.worksheets:
+        raw = []
+        for r in ws.iter_rows(values_only=True):
+            raw.append(list(r) if r is not None else [])
+            if len(raw) >= MAX_WB_ROWS:
+                break
+        while raw and all(_wb_norm(c) == "" for c in raw[-1]):
+            raw.pop()
+        grid = [[_wb_cell_out(c) for c in row[:MAX_WB_COLS]] for row in raw]
+        items = _wb_extract(raw)
+        sheets.append({"name": ws.title, "rows": len(grid), "grid": grid,
+                       "items": items, "item_count": len(items),
+                       "total_value": round(sum(i["total"] for i in items), 2)})
+    wb.close()
+    return sheets
+
+@api_router.post("/workbook")
+async def upload_workbook(
+    file: UploadFile = File(...),
+    month: str = Form(""),
+    do_import: str = Form("true"),
+    authorization: Optional[str] = Header(None),
+):
+    user = await get_current_user(authorization)
+    _rate_limit("wb:" + user["user_id"], 30, 60)
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Хоосон файл / Empty file")
+    if len(content) > 12_000_000:
+        raise HTTPException(status_code=413, detail="Файл хэт том (12MB) / File too large")
+    fname = file.filename or "workbook.xlsx"
+    ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
+    if ext not in ("xlsx", "xlsm"):
+        raise HTTPException(status_code=400, detail="Зөвхөн .xlsx файл дэмжинэ / Only .xlsx files are supported")
+    try:
+        sheets = _wb_parse(content)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Файл уншиж чадсангүй / Could not read file: {e}")
+
+    wb_id = f"wb_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc)
+    default_date = (month + "-15") if re.match(r"^\d{4}-\d{2}$", month or "") else now.strftime("%Y-%m-%d")
+    ddt = datetime.strptime(default_date, "%Y-%m-%d")
+    total_items = sum(s["item_count"] for s in sheets)
+    total_value = round(sum(s["total_value"] for s in sheets), 2)
+
+    imported = {"materials_added": 0, "materials_updated": 0, "stock_added": 0}
+    if str(do_import).lower() == "true":
+        name_to_id = {m["name"]: m["material_id"] for m in
+                      await db.materials.find({"user_id": user["user_id"]}, {"_id": 0, "name": 1, "material_id": 1}).to_list(100000)}
+        new_mats, stock_docs, price_updates = [], [], []
+        for s in sheets:
+            cat = (s["name"] or "Excel").strip() or "Excel"
+            for it in s["items"]:
+                nm = it["name"]
+                if nm in name_to_id:
+                    mid = name_to_id[nm]
+                    if it["price"]:
+                        price_updates.append((mid, it["price"]))
+                else:
+                    mid = f"mat_{uuid.uuid4().hex[:12]}"
+                    name_to_id[nm] = mid
+                    new_mats.append({
+                        "material_id": mid, "user_id": user["user_id"], "name": nm, "category": cat,
+                        "supplier": "", "price": it["price"], "unit": it["unit"] or "ш",
+                        "min_stock": 0, "description": "", "image_url": "", "created_at": now,
+                    })
+                if it["qty"]:
+                    stock_docs.append({
+                        "entry_id": f"stock_{uuid.uuid4().hex[:12]}", "user_id": user["user_id"],
+                        "material_id": mid, "material_name": nm, "unit": it["unit"] or "ш",
+                        "quantity": it["qty"], "date": default_date, "month": ddt.month, "year": ddt.year,
+                        "created_at": now, "source_workbook": wb_id,
+                    })
+        if new_mats:
+            await db.materials.insert_many(new_mats)
+        for mid, price in price_updates:
+            await db.materials.update_one({"material_id": mid}, {"$set": {"price": price}})
+        if stock_docs:
+            await db.stock_entries.insert_many(stock_docs)
+        imported = {"materials_added": len(new_mats),
+                    "materials_updated": len({m for m, _ in price_updates}),
+                    "stock_added": len(stock_docs)}
+
+    await db.workbooks.insert_one({
+        "workbook_id": wb_id, "user_id": user["user_id"], "filename": fname,
+        "uploaded_at": now, "period": default_date,
+        "sheet_count": len(sheets), "item_count": total_items, "total_value": total_value,
+        "sheets": [{"name": s["name"], "rows": s["rows"], "item_count": s["item_count"],
+                    "total_value": s["total_value"], "grid": s["grid"]} for s in sheets],
+    })
+
+    return {
+        "workbook_id": wb_id, "filename": fname, "sheet_count": len(sheets),
+        "item_count": total_items, "total_value": total_value, "imported": imported,
+        "sheets": [{"name": s["name"], "rows": s["rows"], "item_count": s["item_count"],
+                    "total_value": s["total_value"]} for s in sheets],
+    }
+
+@api_router.get("/workbooks")
+async def list_workbooks(authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    return await db.workbooks.find({"user_id": user["user_id"]}, {"_id": 0, "sheets": 0}).sort("uploaded_at", -1).to_list(500)
+
+@api_router.get("/workbook/{workbook_id}")
+async def get_workbook(workbook_id: str, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    doc = await db.workbooks.find_one({"workbook_id": workbook_id, "user_id": user["user_id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Workbook not found")
+    return doc
+
+@api_router.delete("/workbook/{workbook_id}")
+async def delete_workbook(workbook_id: str, authorization: Optional[str] = Header(None)):
+    user = await get_current_user(authorization)
+    res = await db.workbooks.delete_one({"workbook_id": workbook_id, "user_id": user["user_id"]})
+    if res.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Workbook not found")
+    await db.stock_entries.delete_many({"user_id": user["user_id"], "source_workbook": workbook_id})
+    return {"message": "deleted"}
+
 # ==================== APP WIRING ====================
 
 app.include_router(api_router)
@@ -1140,6 +1372,8 @@ async def startup_indexes():
         await db.transactions.create_index([("user_id", 1), ("date", 1)])
         await db.loans.create_index("loan_id", unique=True)
         await db.loans.create_index([("user_id", 1), ("next_payment_date", 1)])
+        await db.workbooks.create_index("workbook_id", unique=True)
+        await db.workbooks.create_index([("user_id", 1), ("uploaded_at", -1)])
         logger.info("Indexes ready")
     except Exception as e:
         logger.error(f"Index error: {e}")

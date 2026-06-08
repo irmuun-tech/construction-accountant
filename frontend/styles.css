@@ -312,6 +312,15 @@ textarea { resize: vertical; min-height: 60px; }
 #wakingOverlay .waking-sub { margin-top: 1.05rem; font-size: .85rem; line-height: 1.65; color: #c4d3e6; }
 @media (prefers-reduced-motion: reduce) { #wakingOverlay .waking-spin { animation-duration: 1.6s; } }
 
+/* ---------- Excel workbook viewer ---------- */
+.wb-tabs { flex-wrap: wrap; max-width: 100%; overflow-x: auto; }
+.wbtable { border-collapse: collapse; width: max-content; min-width: 100%; }
+.wbtable td { border: 1px solid var(--line); padding: .35rem .55rem; font-size: .82rem; vertical-align: top; max-width: 340px; white-space: normal; word-break: break-word; }
+.wbtable td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.wbtable tr:first-child td { font-weight: 700; background: #f7f9fc; }
+[data-theme="dark"] .wbtable tr:first-child td { background: #1b2a3e; }
+[data-theme="dark"] .wbtable td { border-color: #2a3a52; }
+
 /* ---------- Helpers ---------- */
 .hidden { display: none !important; }
 .muted { color: var(--muted); }

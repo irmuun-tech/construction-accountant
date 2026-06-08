@@ -85,7 +85,24 @@
     imp_import_n: ['мөр оруулах', 'rows — Import'], imp_done: ['мөр орлоо', 'rows imported'],
     imp_or_convert: ['Эсвэл зүгээр Excel болгох (хадгалахгүй):', 'Or just convert a file to Excel (no import):'],
     report_download: ['Сарын Excel татах', 'Download month Excel'], report_month: ['Тайлант сар', 'Report month'],
-    imp_no_type: ['"Төрөл" багана алга — бүгд Орлого болж орно. Хэрэв материалын жагсаалт бол дээрээс "📦 Материал" сонгоно уу.', 'No "Type" column found — everything will be Income. If this is a materials list, pick "📦 Materials" above.']
+    imp_no_type: ['"Төрөл" багана алга — бүгд Орлого болж орно. Хэрэв материалын жагсаалт бол дээрээс "📦 Материал" сонгоно уу.', 'No "Type" column found — everything will be Income. If this is a materials list, pick "📦 Materials" above.'],
+    nav_workbooks: ['Excel хуудас', 'Excel sheets'],
+    wb_title: ['Excel ажлын ном', 'Excel workbook'],
+    wb_sub: ['Олон хуудастай Excel-ийг бүхэлд нь уншиж, харах', 'Read & view any multi-sheet Excel in full'],
+    wb_upload: ['Excel (.xlsx) оруулах', 'Upload Excel (.xlsx)'],
+    wb_choose: ['Excel файл сонгох', 'Choose Excel file'],
+    wb_drop: ['.xlsx файлаа энд чирж тавь', 'Drag & drop your .xlsx here'],
+    wb_period: ['Тооллогын сар', 'Stocktake month'],
+    wb_reading: ['Бүх хуудсыг уншиж байна...', 'Reading all sheets...'],
+    wb_sheets: ['хуудас', 'sheets'], wb_items: ['бараа', 'items'], wb_value: ['нийт үнэ', 'total value'],
+    wb_rows: ['мөр', 'rows'], wb_open: ['Нээх', 'Open'], wb_view: ['Хүснэгт харах', 'View sheet'],
+    wb_none: ['Одоогоор Excel оруулаагүй байна', 'No Excel uploaded yet'],
+    wb_added: ['Материалд орлоо', 'added to Materials'],
+    wb_uploaded: ['Амжилттай оруулж, бүх хуудсыг хадгаллаа', 'Uploaded — all sheets saved'],
+    wb_import_note: ['Бараа материалыг автоматаар Материал ба Тооллогод нэмнэ.', 'Items are added to Materials & Stock automatically.'],
+    wb_search: ['Энэ номноос хайх...', 'Search this workbook...'],
+    wb_back: ['← Жагсаалт руу', '← Back to list'],
+    wb_del_confirm: ['Энэ Excel болон холбоотой тооллогыг устгах уу?', 'Delete this Excel and its stock entries?']
   };
   function T(key) { const e = STR[key]; if (!e) return key; if (lang === 'mn') return e[0]; if (lang === 'en') return e[1]; return e[0] + ' / ' + e[1]; }
 
@@ -384,7 +401,7 @@
   }
 
   /* ---------- Router ---------- */
-  const ROUTES = { dashboard: viewDashboard, materials: viewMaterials, stocktake: viewStocktake, ledger: viewLedger, loans: viewLoans, convert: viewConvert, settings: viewSettings };
+  const ROUTES = { dashboard: viewDashboard, materials: viewMaterials, stocktake: viewStocktake, ledger: viewLedger, loans: viewLoans, convert: viewConvert, workbooks: viewWorkbooks, settings: viewSettings };
   function currentRoute() { return location.hash.replace('#/', '') || 'dashboard'; }
   function render() {
     const r = currentRoute(); const fn = ROUTES[r] || viewDashboard;
@@ -850,6 +867,128 @@
       finally { btn.disabled = false; }
     };
     $('#logoutBtn').onclick = () => { if (confirm(T('logout') + '?')) doLogout(); };
+  }
+
+  /* ============================================================
+     EXCEL WORKBOOKS  (read every sheet → view + import)
+     ============================================================ */
+  async function viewWorkbooks() {
+    app.innerHTML = `
+      <div class="page-head"><div><h2>📑 ${T('wb_title')}</h2><div class="sub">${T('wb_sub')}</div></div></div>
+      <div class="card">
+        <div class="form-row">
+          <div class="field"><label>${T('wb_period')}</label><input type="month" id="wbMonth" value="${thisMonthVal()}"></div>
+        </div>
+        <div id="wbDrop" class="dropzone">
+          <div style="font-size:2.4rem">📊 → 📱</div>
+          <p style="margin:.4rem 0 .2rem"><b>${T('wb_drop')}</b></p>
+          <p class="hint">${T('wb_import_note')}</p>
+          <button class="btn primary mt" id="wbChoose">📂 ${T('wb_choose')}</button>
+          <input type="file" id="wbFile" accept=".xlsx,.xlsm" hidden>
+        </div>
+        <div id="wbResult" class="mt"></div>
+      </div>
+      <div id="wbList" class="mt"><div class="loading"><div class="spinner"></div>${T('loading')}</div></div>`;
+
+    const fileInput = $('#wbFile'), dz = $('#wbDrop');
+    $('#wbChoose').onclick = () => fileInput.click();
+    fileInput.onchange = () => { if (fileInput.files[0]) uploadWorkbook(fileInput.files[0]); };
+    ['dragover', 'dragenter'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add('drag'); }));
+    ['dragleave', 'drop'].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove('drag'); }));
+    dz.addEventListener('drop', e => { const f = e.dataTransfer.files && e.dataTransfer.files[0]; if (f) uploadWorkbook(f); });
+    loadWorkbookList();
+  }
+
+  async function uploadWorkbook(file) {
+    const name = (file.name || '').toLowerCase();
+    if (!name.endsWith('.xlsx') && !name.endsWith('.xlsm')) { toast(lang === 'en' ? 'Please choose an .xlsx file' : '.xlsx файл сонгоно уу'); return; }
+    const res = $('#wbResult'); if (res) res.innerHTML = `<div class="loading"><div class="spinner"></div>${T('wb_reading')}</div>`;
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      fd.append('month', ($('#wbMonth') && $('#wbMonth').value) || '');
+      fd.append('do_import', 'true');
+      const r = await fetch(API + '/workbook', { method: 'POST', headers: { Authorization: 'Bearer ' + token }, body: fd });
+      const data = await r.json().catch(() => null);
+      if (!r.ok) throw new Error((data && data.detail) || ('Error ' + r.status));
+      const imp = data.imported || {};
+      res.innerHTML = `
+        <div class="alert info" style="margin-top:.6rem">✅ <b>${esc(data.filename)}</b> — ${data.sheet_count} ${T('wb_sheets')}, ${data.item_count} ${T('wb_items')} · ${fmtMoney(data.total_value)}<br>
+          <span class="hint">${(imp.materials_added || 0) + (imp.materials_updated || 0)} ${T('wb_added')} · ${imp.stock_added || 0} ${T('nav_stocktake')}</span></div>
+        <div class="table-wrap mt"><table><thead><tr><th>${T('wb_sheets')}</th><th style="text-align:right">${T('wb_rows')}</th><th style="text-align:right">${T('wb_items')}</th><th style="text-align:right">${T('wb_value')}</th></tr></thead><tbody>
+          ${data.sheets.map(s => `<tr><td>${esc(s.name)}</td><td style="text-align:right">${s.rows}</td><td style="text-align:right">${s.item_count}</td><td style="text-align:right">${fmtMoney(s.total_value)}</td></tr>`).join('')}
+        </tbody></table></div>`;
+      toast(T('wb_uploaded'));
+      loadWorkbookList();
+    } catch (e) { if (res) res.innerHTML = `<div class="alert warn" style="margin-top:.6rem">⚠️ ${esc(e.message)}</div>`; }
+  }
+
+  async function loadWorkbookList() {
+    const box = $('#wbList'); if (!box) return;
+    try {
+      const list = await api('/workbooks');
+      if (!list.length) { box.innerHTML = `<div class="card empty"><span class="big">📑</span>${T('wb_none')}</div>`; return; }
+      box.innerHTML = `<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">${list.map(w => `
+        <div class="card">
+          <div class="section-title"><h3 style="font-size:1rem">📘 ${esc(w.filename)}</h3></div>
+          <div class="kv">
+            <span class="k">${T('wb_sheets')}</span><span>${w.sheet_count}</span>
+            <span class="k">${T('wb_items')}</span><span>${w.item_count}</span>
+            <span class="k">${T('wb_value')}</span><span>${fmtMoney(w.total_value)}</span>
+            <span class="k">${T('date')}</span><span>${esc((w.period || '').slice(0, 10))}</span>
+          </div>
+          <div class="row-actions mt">
+            <button class="btn sm primary" data-wbopen="${w.workbook_id}">📂 ${T('wb_open')}</button>
+            <button class="btn sm danger" data-wbdel="${w.workbook_id}">✕</button>
+          </div>
+        </div>`).join('')}</div>`;
+      box.querySelectorAll('[data-wbopen]').forEach(b => b.onclick = () => openWorkbook(b.dataset.wbopen));
+      box.querySelectorAll('[data-wbdel]').forEach(b => b.onclick = async () => {
+        if (!confirm(T('wb_del_confirm'))) return;
+        try { await api('/workbook/' + b.dataset.wbdel, { method: 'DELETE' }); toast(T('delete')); loadWorkbookList(); } catch (e) { toast(e.message); }
+      });
+    } catch (e) { box.innerHTML = `<div class="card empty">${esc(e.message)}</div>`; }
+  }
+
+  async function openWorkbook(id) {
+    setLoading();
+    let wb;
+    try { wb = await api('/workbook/' + id); } catch (e) { app.innerHTML = `<div class="card empty"><span class="big">⚠️</span>${esc(e.message)}</div>`; return; }
+    const sheets = wb.sheets || [];
+    let active = 0;
+    app.innerHTML = `
+      <div class="page-head"><div><h2>📘 ${esc(wb.filename)}</h2><div class="sub">${wb.sheet_count} ${T('wb_sheets')} · ${wb.item_count} ${T('wb_items')} · ${fmtMoney(wb.total_value)}</div></div>
+        <div class="head-actions"><button class="btn sm" id="wbBack">${T('wb_back')}</button></div></div>
+      <div class="card">
+        <div class="seg wb-tabs" id="wbTabs">${sheets.map((s, i) => `<button type="button" class="seg-btn${i === 0 ? ' active' : ''}" data-tab="${i}">${esc(s.name)} <span class="pill muted" style="margin-left:.3rem">${s.item_count}</span></button>`).join('')}</div>
+        <input id="wbSearch" placeholder="${T('wb_search')}" style="max-width:340px;margin:.7rem 0 .6rem">
+        <div id="wbGrid" class="table-wrap" style="max-height:70vh;overflow:auto"></div>
+      </div>`;
+    $('#wbBack').onclick = () => { location.hash = '#/workbooks'; };
+    const renderGrid = () => {
+      const s = sheets[active] || { grid: [] };
+      const q = ($('#wbSearch').value || '').trim().toLowerCase();
+      const rowsHtml = (s.grid || []).map(row => {
+        const cells = (row || []).map(c => {
+          const isNum = (typeof c === 'number');
+          let disp;
+          if (isNum) { disp = c.toLocaleString('en-US'); }
+          else { disp = String(c == null ? '' : c).replace(/\s+/g, ' ').trim(); if (disp.length > 200) disp = disp.slice(0, 200) + '…'; }
+          return `<td${isNum ? ' class="num"' : ''}>${esc(disp)}</td>`;
+        }).join('');
+        const text = (row || []).map(c => (c == null ? '' : String(c))).join(' ').toLowerCase();
+        const hide = q && !text.includes(q);
+        return `<tr${hide ? ' style="display:none"' : ''}>${cells}</tr>`;
+      }).join('');
+      $('#wbGrid').innerHTML = `<table class="wbtable">${rowsHtml || '<tr><td>—</td></tr>'}</table>`;
+    };
+    $('#wbTabs').querySelectorAll('[data-tab]').forEach(b => b.onclick = () => {
+      active = +b.dataset.tab;
+      $('#wbTabs').querySelectorAll('[data-tab]').forEach(x => x.classList.toggle('active', x === b));
+      renderGrid();
+    });
+    $('#wbSearch').oninput = renderGrid;
+    renderGrid();
   }
 
   /* ============================================================
