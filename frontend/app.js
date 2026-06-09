@@ -964,7 +964,7 @@
         <input id="wbSearch" placeholder="${T('wb_search')}" style="max-width:340px;margin:.7rem 0 .6rem">
         <div id="wbGrid" class="table-wrap" style="max-height:70vh;overflow:auto"></div>
       </div>`;
-    $('#wbBack').onclick = () => { location.hash = '#/workbooks'; };
+    $('#wbBack').onclick = () => { viewWorkbooks(); };
     const renderGrid = () => {
       const s = sheets[active] || { grid: [] };
       const q = ($('#wbSearch').value || '').trim().toLowerCase();
