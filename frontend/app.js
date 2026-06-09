@@ -14,7 +14,7 @@
   /* ---------- i18n ---------- */
   const STR = {
     nav_dashboard: ['Хяналт', 'Dashboard'], nav_materials: ['Материал', 'Materials'],
-    nav_stocktake: ['Тооллого', 'Stocktaking'], nav_ledger: ['Орлого/Зарлага', 'Income & Expense'],
+    nav_stocktake: ['Тооллого', 'Stocktaking'], nav_ledger: ['Зарлага', 'Expense'],
     nav_loans: ['Зээл', 'Loans'], nav_settings: ['Тохиргоо', 'Settings'],
     add: ['Нэмэх', 'Add'], edit: ['Засах', 'Edit'], delete: ['Устгах', 'Delete'], save: ['Хадгалах', 'Save'],
     cancel: ['Болих', 'Cancel'], search: ['Хайх', 'Search'], month: ['Сар', 'Month'], all: ['Бүгд', 'All'],
@@ -43,7 +43,7 @@
     select_material: ['Материал сонгох', 'Select material'], no_stock: ['Тооллого алга', 'No counts yet'],
     counted_qty: ['Тоолсон тоо', 'Counted quantity'],
 
-    led_title: ['Орлого ба Зарлага', 'Income & Expense'], led_sub: ['Мөнгөн гүйлгээ', 'Cash flow'],
+    led_title: ['Зарлага', 'Expense'], led_sub: ['Зардлын бүртгэл (орлогыг гараар нэмж болно)', 'Expense tracking (add income manually)'],
     add_txn: ['Гүйлгээ нэмэх', 'Add entry'], type: ['Төрөл', 'Type'], income_t: ['Орлого', 'Income'],
     outcome_t: ['Зарлага', 'Expense'], no_txns: ['Гүйлгээ алга', 'No entries'], by_category: ['Ангиллаар', 'By category'],
     buy_material: ['Материал худалдан авалт', 'Material purchase'], none_opt: ['Сонгохгүй', 'None'],
@@ -1113,7 +1113,11 @@
   function closeSidebar() { $('#sidebar').classList.remove('open'); $('#scrim').classList.remove('show'); }
   $('#menuBtn').onclick = () => $('#sidebar').classList.contains('open') ? closeSidebar() : openSidebar();
   $('#scrim').onclick = closeSidebar;
-  $$('.navlink').forEach(a => a.addEventListener('click', () => { location.hash = '#/' + a.dataset.route; }));
+  $$('.navlink').forEach(a => a.addEventListener('click', () => {
+    const target = '#/' + a.dataset.route;
+    if (location.hash === target) { render(); } else { location.hash = target; }
+    closeSidebar();
+  }));
   $('#langBtn').onclick = () => { const order = ['both', 'mn', 'en']; lang = order[(order.indexOf(lang) + 1) % 3]; localStorage.setItem('ca_lang', lang); applyStaticI18n(); render(); };
 
   /* ---------- Dark / light theme toggle ---------- */
